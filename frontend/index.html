@@ -1,0 +1,1951 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ShortsGenius — Autonomous AI Instagram Reel & Video Generator</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --bg-dark: #080B12;
+      --bg-surface: #0F1420;
+      --bg-surface-elevated: #161D2E;
+      --bg-card: rgba(18, 24, 38, 0.85);
+      --border-color: rgba(255, 255, 255, 0.08);
+      --border-glow: rgba(0, 242, 254, 0.3);
+      
+      --text-main: #F9FAFB;
+      --text-muted: #94A3B8;
+      --text-sub: #64748B;
+      
+      --primary: #00F2FE;
+      --secondary: #4FACFE;
+      --accent: #FFE600;
+      --instagram: #E1306C;
+      --instagram-grad: linear-gradient(135deg, #833AB4 0%, #FD1D1D 50%, #FCB045 100%);
+      --success: #10B981;
+      --danger: #EF4444;
+      
+      --gradient-neon: linear-gradient(135deg, #00F2FE 0%, #4FACFE 50%, #7F00FF 100%);
+      --gradient-fire: linear-gradient(135deg, #FFE600 0%, #FF5E36 100%);
+      --glow-neon: 0 0 30px rgba(0, 242, 254, 0.25);
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+      background-color: var(--bg-dark);
+      color: var(--text-main);
+      min-height: 100vh;
+      overflow-x: hidden;
+      line-height: 1.5;
+    }
+
+    /* Ambient Background Glow */
+    .ambient-glow {
+      position: fixed;
+      top: -150px;
+      left: 10%;
+      width: 700px;
+      height: 700px;
+      background: radial-gradient(circle, rgba(0, 242, 254, 0.08) 0%, rgba(127, 0, 255, 0.05) 50%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .ambient-glow-2 {
+      position: fixed;
+      bottom: -150px;
+      right: 5%;
+      width: 600px;
+      height: 600px;
+      background: radial-gradient(circle, rgba(225, 48, 108, 0.07) 0%, transparent 70%);
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* Top Navigation */
+    header {
+      position: sticky;
+      top: 0;
+      z-index: 50;
+      backdrop-filter: blur(18px);
+      background: rgba(8, 11, 18, 0.85);
+      border-bottom: 1px solid var(--border-color);
+      padding: 0.9rem 2.5rem;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 0.85rem;
+      text-decoration: none;
+    }
+
+    .brand-icon {
+      width: 38px;
+      height: 38px;
+      background: var(--gradient-neon);
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 1.25rem;
+      box-shadow: 0 0 20px rgba(0, 242, 254, 0.35);
+    }
+
+    .brand-title {
+      font-family: 'Outfit', sans-serif;
+      font-size: 1.35rem;
+      font-weight: 800;
+      letter-spacing: -0.02em;
+      background: linear-gradient(135deg, #FFFFFF 30%, #94A3B8 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .brand-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.68rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      background: rgba(0, 242, 254, 0.12);
+      border: 1px solid rgba(0, 242, 254, 0.3);
+      color: var(--primary);
+      font-weight: 600;
+    }
+
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+    }
+
+    .specs-pill {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      background: var(--bg-surface-elevated);
+      padding: 0.35rem 0.85rem;
+      border-radius: 6px;
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+    }
+
+    .settings-btn {
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border-color);
+      color: #FFF;
+      padding: 0.4rem 0.85rem;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 0.82rem;
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      transition: all 0.2s;
+    }
+    .settings-btn:hover {
+      border-color: var(--primary);
+      box-shadow: 0 0 12px rgba(0, 242, 254, 0.25);
+    }
+
+    /* Main Grid Layout */
+    main {
+      position: relative;
+      z-index: 10;
+      max-width: 1600px;
+      margin: 0 auto;
+      padding: 2rem 2.5rem;
+      display: grid;
+      grid-template-columns: 420px 1fr 380px;
+      gap: 2rem;
+    }
+
+    @media (max-width: 1300px) {
+      main {
+        grid-template-columns: 1fr 1fr;
+      }
+      .preview-column {
+        grid-column: span 2;
+        display: flex;
+        justify-content: center;
+      }
+    }
+
+    @media (max-width: 850px) {
+      main {
+        grid-template-columns: 1fr;
+        padding: 1.5rem 1rem;
+      }
+      .preview-column {
+        grid-column: span 1;
+      }
+    }
+
+    /* Cards & Panels */
+    .studio-panel {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      padding: 1.75rem;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+      display: flex;
+      flex-direction: column;
+      gap: 1.5rem;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .panel-title {
+      font-family: 'Outfit', sans-serif;
+      font-size: 1.15rem;
+      font-weight: 700;
+      color: #FFF;
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .panel-subtitle {
+      font-size: 0.82rem;
+      color: var(--text-sub);
+    }
+
+    /* Forms & Controls */
+    .form-group {
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .form-label {
+      font-size: 0.82rem;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .text-input {
+      background: var(--bg-dark);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 0.85rem 1rem;
+      color: #FFF;
+      font-size: 0.95rem;
+      font-family: 'Inter', sans-serif;
+      transition: all 0.2s ease;
+      width: 100%;
+    }
+
+    .text-input:focus {
+      outline: none;
+      border-color: var(--primary);
+      box-shadow: 0 0 15px rgba(0, 242, 254, 0.2);
+    }
+
+    textarea.text-input {
+      resize: vertical;
+      min-height: 85px;
+    }
+
+    /* Preset Chips */
+    .chips-group {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+    }
+
+    .chip {
+      font-size: 0.76rem;
+      padding: 0.35rem 0.75rem;
+      border-radius: 999px;
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      user-select: none;
+    }
+
+    .chip:hover {
+      background: rgba(0, 242, 254, 0.1);
+      border-color: rgba(0, 242, 254, 0.4);
+      color: #FFF;
+      transform: translateY(-1px);
+    }
+
+    /* Dual Selectors */
+    .control-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    .select-dropdown {
+      background: var(--bg-dark);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 0.65rem 0.85rem;
+      color: #FFF;
+      font-size: 0.85rem;
+      font-family: 'Inter', sans-serif;
+      width: 100%;
+      cursor: pointer;
+    }
+
+    .select-dropdown:focus {
+      outline: none;
+      border-color: var(--primary);
+    }
+
+    /* Buttons */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 0.5rem;
+      padding: 0.85rem 1.5rem;
+      border-radius: 10px;
+      font-family: 'Outfit', sans-serif;
+      font-weight: 700;
+      font-size: 0.95rem;
+      cursor: pointer;
+      transition: all 0.25s ease;
+      border: none;
+      text-decoration: none;
+    }
+
+    .btn-primary {
+      background: var(--gradient-neon);
+      color: #080B12;
+      box-shadow: 0 4px 20px rgba(0, 242, 254, 0.3);
+    }
+
+    .btn-primary:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 28px rgba(0, 242, 254, 0.45);
+    }
+
+    .btn-instagram {
+      background: var(--instagram-grad);
+      color: #FFF;
+      box-shadow: 0 4px 25px rgba(225, 48, 108, 0.35);
+    }
+
+    .btn-instagram:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 30px rgba(225, 48, 108, 0.5);
+    }
+
+    .btn-secondary {
+      background: var(--bg-surface-elevated);
+      color: #FFF;
+      border: 1px solid var(--border-color);
+    }
+
+    .btn-secondary:hover {
+      background: rgba(255, 255, 255, 0.08);
+      border-color: rgba(255, 255, 255, 0.2);
+    }
+
+    .btn-render {
+      background: var(--gradient-fire);
+      color: #080B12;
+      box-shadow: 0 4px 25px rgba(255, 94, 54, 0.35);
+      width: 100%;
+      padding: 1rem;
+      font-size: 1.05rem;
+    }
+
+    .btn-render:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 35px rgba(255, 94, 54, 0.5);
+    }
+
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+      transform: none !important;
+      box-shadow: none !important;
+    }
+
+    /* Storyboard Section */
+    .storyboard-container {
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+      max-height: 650px;
+      overflow-y: auto;
+      padding-right: 0.5rem;
+    }
+
+    .storyboard-container::-webkit-scrollbar {
+      width: 6px;
+    }
+    .storyboard-container::-webkit-scrollbar-thumb {
+      background: rgba(255, 255, 255, 0.15);
+      border-radius: 4px;
+    }
+
+    .scene-card {
+      background: var(--bg-dark);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 1.15rem 1.25rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.75rem;
+      transition: all 0.2s;
+    }
+
+    .scene-card:hover {
+      border-color: rgba(0, 242, 254, 0.35);
+    }
+
+    .scene-card-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .scene-tag {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: var(--primary);
+      text-transform: uppercase;
+    }
+
+    .scene-duration {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+      color: var(--text-sub);
+    }
+
+    .scene-narration {
+      font-size: 0.9rem;
+      color: #FFF;
+      line-height: 1.45;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid var(--border-color);
+      padding: 0.6rem 0.8rem;
+      border-radius: 8px;
+      width: 100%;
+      resize: vertical;
+      min-height: 60px;
+    }
+
+    .scene-narration:focus {
+      outline: none;
+      background: var(--bg-surface-elevated);
+      border-color: var(--primary);
+    }
+
+    /* Video B-Roll Source Box on Scene Card */
+    .scene-broll-box {
+      background: rgba(0, 242, 254, 0.04);
+      border: 1px dashed rgba(0, 242, 254, 0.25);
+      border-radius: 8px;
+      padding: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+    }
+
+    .broll-status-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 0.78rem;
+    }
+
+    .broll-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      color: var(--primary);
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.72rem;
+    }
+
+    .broll-actions {
+      display: flex;
+      gap: 0.5rem;
+    }
+
+    .mini-btn {
+      font-size: 0.72rem;
+      padding: 0.3rem 0.65rem;
+      border-radius: 6px;
+      background: var(--bg-surface-elevated);
+      border: 1px solid var(--border-color);
+      color: var(--text-muted);
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.3rem;
+      transition: all 0.2s;
+    }
+    .mini-btn:hover {
+      color: #FFF;
+      border-color: var(--primary);
+      background: rgba(0, 242, 254, 0.1);
+    }
+    .mini-btn.playing {
+      background: rgba(255, 94, 54, 0.2);
+      border-color: #FF5E36;
+      color: #FF8A65;
+      animation: pulse-border 1.2s infinite ease-in-out;
+    }
+    @keyframes pulse-border {
+      0%, 100% { border-color: #FF5E36; }
+      50% { border-color: #00F2FE; }
+    }
+
+    /* Reels Archive Gallery */
+    .reel-item {
+      background: var(--bg-dark);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 0.6rem 0.8rem;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      transition: all 0.2s ease;
+    }
+    .reel-item:hover {
+      border-color: var(--primary);
+      background: rgba(0, 242, 254, 0.05);
+    }
+    .reel-item-info {
+      display: flex;
+      flex-direction: column;
+      gap: 0.2rem;
+      overflow: hidden;
+    }
+    .reel-item-title {
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: #FFF;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-family: 'JetBrains Mono', monospace;
+    }
+    .reel-item-meta {
+      font-size: 0.7rem;
+      color: var(--text-sub);
+    }
+    .reel-item-actions {
+      display: flex;
+      align-items: center;
+      gap: 0.35rem;
+      flex-shrink: 0;
+    }
+
+    .scene-provider-select {
+      background: rgba(15, 20, 32, 0.95);
+      color: var(--primary);
+      border: 1px solid rgba(0, 242, 254, 0.35);
+      border-radius: 6px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      padding: 0.22rem 0.5rem;
+      cursor: pointer;
+      outline: none;
+      transition: all 0.2s ease;
+      font-family: 'Outfit', sans-serif;
+    }
+    .scene-provider-select:hover {
+      border-color: var(--primary);
+      box-shadow: 0 0 8px rgba(0, 242, 254, 0.25);
+    }
+    .scene-provider-select option {
+      background: #0F1420;
+      color: #F9FAFB;
+    }
+
+    /* Pipeline Progress Stepper */
+    .progress-box {
+      display: none;
+      background: var(--bg-surface-elevated);
+      border: 1px solid rgba(0, 242, 254, 0.3);
+      border-radius: 12px;
+      padding: 1.25rem;
+      box-shadow: var(--glow-neon);
+      animation: pulse-glow 2s infinite ease-in-out;
+    }
+
+    @keyframes pulse-glow {
+      0%, 100% { border-color: rgba(0, 242, 254, 0.3); }
+      50% { border-color: rgba(0, 242, 254, 0.7); }
+    }
+
+    .progress-bar-bg {
+      width: 100%;
+      height: 8px;
+      background: var(--bg-dark);
+      border-radius: 999px;
+      overflow: hidden;
+      margin: 0.75rem 0;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: var(--gradient-neon);
+      transition: width 0.4s ease;
+    }
+
+    .progress-status-text {
+      font-size: 0.82rem;
+      color: #FFF;
+      display: flex;
+      justify-content: space-between;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    /* Smartphone 9:16 Video Player */
+    .preview-column {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 1.5rem;
+    }
+
+    .phone-mockup {
+      width: 320px;
+      height: 568px;
+      background: #000;
+      border-radius: 40px;
+      border: 4px solid #2A3347;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.7), 0 0 40px rgba(0, 242, 254, 0.15);
+      position: relative;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .phone-notch {
+      position: absolute;
+      top: 10px;
+      width: 100px;
+      height: 18px;
+      background: #111;
+      border-radius: 20px;
+      z-index: 30;
+    }
+
+    .video-player {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      background: #000;
+    }
+
+    /* Instagram Ready Package Card */
+    .ig-package-card {
+      display: none;
+      background: var(--bg-surface);
+      border: 1px solid rgba(225, 48, 108, 0.35);
+      border-radius: 16px;
+      padding: 1.5rem;
+      width: 100%;
+      box-shadow: 0 10px 30px rgba(225, 48, 108, 0.12);
+      flex-direction: column;
+      gap: 1rem;
+    }
+
+    .ig-package-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding-bottom: 0.75rem;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .ig-badge {
+      font-family: 'JetBrains Mono', monospace;
+      font-size: 0.7rem;
+      padding: 0.2rem 0.6rem;
+      border-radius: 999px;
+      background: rgba(225, 48, 108, 0.15);
+      border: 1px solid rgba(225, 48, 108, 0.4);
+      color: #FF5E8E;
+      font-weight: 700;
+    }
+
+    .caption-box {
+      background: var(--bg-dark);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 0.85rem;
+      font-size: 0.82rem;
+      color: #E2E8F0;
+      white-space: pre-wrap;
+      max-height: 160px;
+      overflow-y: auto;
+      line-height: 1.4;
+      font-family: 'Inter', sans-serif;
+    }
+
+    .hashtags-cloud {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.4rem;
+      max-height: 100px;
+      overflow-y: auto;
+    }
+
+    .hashtag-pill {
+      font-size: 0.72rem;
+      padding: 0.2rem 0.5rem;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      color: #93C5FD;
+      font-family: 'JetBrains Mono', monospace;
+    }
+
+    .growth-tip-box {
+      background: rgba(16, 185, 129, 0.06);
+      border: 1px solid rgba(16, 185, 129, 0.2);
+      border-radius: 8px;
+      padding: 0.65rem 0.85rem;
+      font-size: 0.75rem;
+      color: #A7F3D0;
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+    }
+
+    /* Modal */
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(4, 7, 13, 0.8);
+      backdrop-filter: blur(12px);
+      z-index: 1000;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 1.5rem;
+    }
+    .modal-overlay.open {
+      display: flex;
+    }
+
+    .modal-dialog {
+      max-height: 88vh;
+      overflow-y: auto;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-color);
+      border-radius: 16px;
+      width: 100%;
+      max-width: 540px;
+      box-shadow: 0 25px 60px rgba(0, 0, 0, 0.8);
+      padding: 1.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: 1.25rem;
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 0.75rem;
+    }
+
+    .close-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 1.4rem;
+      cursor: pointer;
+    }
+    .close-btn:hover {
+      color: #FFF;
+    }
+
+    /* Video Library Grid */
+    .video-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+      max-height: 400px;
+      overflow-y: auto;
+    }
+
+    .video-grid-item {
+      background: var(--bg-dark);
+      border: 1px solid var(--border-color);
+      border-radius: 10px;
+      padding: 0.75rem;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 0.5rem;
+      transition: all 0.2s;
+    }
+    .video-grid-item:hover {
+      border-color: var(--primary);
+      transform: translateY(-2px);
+    }
+    .video-grid-preview {
+      width: 100%;
+      height: 120px;
+      object-fit: cover;
+      border-radius: 6px;
+      background: #000;
+    }
+
+    /* Toast */
+    .toast {
+      position: fixed;
+      bottom: 2rem;
+      right: 2rem;
+      z-index: 2000;
+      background: rgba(18, 24, 38, 0.95);
+      backdrop-filter: blur(16px);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 0.85rem 1.25rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      transform: translateY(150px);
+      transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .toast.show {
+      transform: translateY(0);
+    }
+  </style>
+</head>
+<body>
+  <div class="ambient-glow"></div>
+  <div class="ambient-glow-2"></div>
+
+  <!-- Header -->
+  <header>
+    <a href="#" class="brand">
+      <div class="brand-icon">🎬</div>
+      <div>
+        <div class="brand-title">ShortsGenius</div>
+      </div>
+      <span class="brand-badge">AI REELS ENGINE</span>
+    </a>
+    <div class="header-actions">
+      <div class="specs-pill">📐 1080×1920 (9:16) • 🔀 Multi-Model Router</div>
+      <div class="specs-pill" id="stock-status-pill" style="cursor:pointer;" onclick="openSettingsModal()" title="Configure Pixabay or Pexels stock-video keys">Stock sources: checking...</div>
+      <button class="settings-btn" onclick="openSettingsModal()">
+        <span>⚙️ API Keys & Sources</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- Studio Workspace -->
+  <main>
+    <!-- Left Column: Prompt & Director Controls -->
+    <section class="studio-panel">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">💡 Director Command Center</h2>
+          <p class="panel-subtitle">Define your niche, viral hook, and voice narration</p>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Video Concept / Script Prompt</label>
+        <textarea class="text-input" id="topic-input" placeholder="e.g. 3 fashion rules that instantly elevate your daily outfit..."></textarea>
+      </div>
+
+      <!-- Quick Preset Suggestions Tailored to User's 4 Core Niches -->
+      <div class="form-group">
+        <label class="form-label">Trending Creator Templates</label>
+        <div class="chips-group">
+          <div class="chip" onclick="applyPreset('3 AI tools that can save you hours of work', 'Tech & AI', 40, 'Telugu')">🤖 3 AI టూల్స్ (Telugu Tech)</div>
+          <div class="chip" onclick="applyPreset('3 style rules that make any outfit look ten times more expensive', 'Fashion & Style', 40, 'Telugu')">👔 స్టైల్ సీక్రెట్స్ (Fashion)</div>
+          <div class="chip" onclick="applyPreset('If you are training hard but not gaining muscle, fix this mistake', 'Fitness & Gym', 40, 'Telugu')">🏋️ మజిల్ గ్రోత్ (Fitness)</div>
+          <div class="chip" onclick="applyPreset('The physics paradox that completely defies standard human intuition', 'Mind-Blowing Facts', 35, 'Telugu')">🌌 స్పేస్ పారడాక్స్ (Facts)</div>
+        </div>
+      </div>
+
+      <div class="control-row">
+        <div class="form-group">
+          <label class="form-label">Language / భాష</label>
+          <select class="select-dropdown" id="language-select" onchange="handleLanguageChange()">
+            <option value="Telugu" selected>Telugu (తెలుగు)</option>
+            <option value="English">English</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Content Niche</label>
+          <select class="select-dropdown" id="niche-select">
+            <option value="Tech & AI" selected>Tech & Artificial Intelligence</option>
+            <option value="Fashion & Style">Fashion & Style</option>
+            <option value="Fitness & Gym">Fitness & Gym</option>
+            <option value="Mind-Blowing Facts">Mind-Blowing Facts & Science</option>
+            <option value="Travel & Adventure">Travel & Adventure</option>
+            <option value="Finance & Wealth">Finance & Wealth Strategy</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="control-row">
+        <div class="form-group">
+          <label class="form-label">Target Duration</label>
+          <select class="select-dropdown" id="duration-select">
+            <option value="25">25s (Quick Hook & Tip)</option>
+            <option value="40" selected>40s (Standard 8-Scene Viral Reel)</option>
+            <option value="50">50s (Deep Breakdown)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Neural Voice Narrator</label>
+          <select class="select-dropdown" id="voice-select">
+            <option value="te-IN-MohanNeural" selected>Mohan (Telugu Authoritative Male)</option>
+            <option value="te-IN-ShrutiNeural">Shruti (Telugu Engaging Female)</option>
+            <option value="en-US-ChristopherNeural">Christopher (English Authoritative Male)</option>
+            <option value="en-US-JennyNeural">Jenny (English Engaging Female)</option>
+            <option value="en-US-GuyNeural">Guy (English Viral Male)</option>
+            <option value="en-GB-RyanNeural">Ryan (English British)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="control-row">
+        <div class="form-group">
+          <label class="form-label">Background Audio</label>
+          <select class="select-dropdown" id="music-select">
+            <option value="lofi_chill" selected>Lo-Fi Chill (Smart Ducking 15%)</option>
+            <option value="suspense_pulse">Suspense Pulse (Dark Cinematic)</option>
+            <option value="none">No Background Music</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Active Karaoke Theme</label>
+          <select class="select-dropdown" id="subtitle-style-select">
+            <option value="hormozi_gold" selected>⚡ Alex Hormozi (Gold Pop)</option>
+            <option value="mrbeast_yellow">🦁 MrBeast (Neon Yellow)</option>
+            <option value="cyberpunk_cyan">🤖 Cyberpunk (Electric Cyan)</option>
+            <option value="emerald_lime">🌿 Emerald (Growth Lime)</option>
+            <option value="clean_minimal">⚪ Clean Minimalist (White)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="control-row">
+        <div class="form-group">
+          <label class="form-label">Subtitle Script / లిపి</label>
+          <select class="select-dropdown" id="subtitle-format-select">
+            <option value="roman" selected>🔤 Roman Telugu (Tenglish / English Letters)</option>
+            <option value="native">తెలుగు Native Telugu Script (తెలుగు లిపి)</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label class="form-label">Subtitle Vertical Position</label>
+          <select class="select-dropdown" id="subtitle-pos-select">
+            <option value="bottom_safe" selected>📱 Instagram Reel Safe Zone (Lower Third)</option>
+            <option value="center_eye">🎯 Focal Center (Eye-Level Midpoint)</option>
+            <option value="upper_third">🔝 Upper Hook Zone (Top)</option>
+          </select>
+        </div>
+      </div>
+
+      <button class="btn btn-primary" id="btn-generate-storyboard" onclick="handleGenerateStoryboard()">
+        <span>✨ Synthesize AI Storyboard & Script</span>
+      </button>
+
+      <!-- Active Pipeline Progress -->
+      <div class="progress-box" id="progress-box">
+        <div class="progress-status-text">
+          <span id="progress-step-title">Rendering Video Pipeline...</span>
+          <span id="progress-percent">0%</span>
+        </div>
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="progress-bar-fill"></div>
+        </div>
+        <p style="font-size: 0.78rem; color: var(--text-muted);" id="progress-detail">Starting video engine...</p>
+      </div>
+
+      <label style="display:block; margin:12px 0; font-size:0.85rem;">
+        <input type="checkbox" id="allow-photo-motion">
+        Allow photo-animation demos (not real footage). Off by default.
+      </label>
+      <pre id="render-diagnostics" style="white-space:pre-wrap; font-size:0.8rem; max-height:200px; overflow:auto;"></pre>
+      <div id="scene-source-report" aria-live="polite" style="font-size:0.76rem;max-height:240px;overflow:auto;margin-bottom:12px;"></div>
+      <button class="btn btn-render" id="btn-render-video" onclick="handleRenderVideo()" style="display: none;">
+        <span>🚀 Render 1080x1920 Instagram Reel</span>
+      </button>
+    </section>
+
+    <!-- Center Column: Storyboard & Real Video B-Roll Breakdown -->
+    <section class="studio-panel">
+      <div class="panel-header">
+        <div>
+          <h2 class="panel-title">📋 Storyboard & Video B-Roll Clips</h2>
+          <p class="panel-subtitle" id="storyboard-status">Review spoken script, customize video footage, and assign clips</p>
+        </div>
+      </div>
+
+      <div class="storyboard-container" id="storyboard-list">
+        <div style="text-align: center; padding: 4rem 1rem; color: var(--text-sub);">
+          <div style="font-size: 2.5rem; margin-bottom: 0.75rem;">🎬</div>
+          Click <strong>"Synthesize AI Storyboard"</strong> or choose a template to create your script and attach real video footage!
+        </div>
+      </div>
+    </section>
+
+    <!-- Right Column: 9:16 Vertical Video Player & Instagram Ready Package -->
+    <section class="preview-column">
+      <div class="phone-mockup">
+        <div class="phone-notch"></div>
+        <video class="video-player" id="main-video-player" controls playsinline loop preload="metadata">
+          Your browser does not support vertical MP4 video playback.
+        </video>
+      </div>
+
+      <div style="width: 320px; display: flex; flex-direction: column; gap: 0.75rem;">
+        <a id="btn-download" href="#" aria-disabled="true" download="shortsgenius_reel.mp4" class="btn btn-primary" style="width: 100%;">
+          <span>📥 Download 1080x1920 Reel</span>
+        </a>
+      </div>
+
+      <!-- Instagram Ready Upload Package Card -->
+      <div class="ig-package-card" id="ig-package-card">
+        <div class="ig-package-header">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <span style="font-size: 1.1rem;">📸</span>
+            <strong style="font-size: 0.95rem; color: #FFF;">Instagram Ready Kit</strong>
+          </div>
+          <span class="ig-badge">READY TO POST</span>
+        </div>
+
+        <div>
+          <div class="form-label" style="margin-bottom: 0.3rem;">Caption & Call to Action</div>
+          <div class="caption-box" id="ig-caption-text">
+            Generating viral caption...
+          </div>
+        </div>
+
+        <div>
+          <div class="form-label" style="margin-bottom: 0.3rem;">20+ Viral Niche Hashtags</div>
+          <div class="hashtags-cloud" id="ig-hashtags-cloud">
+            <!-- Hashtag pills inserted dynamically -->
+          </div>
+        </div>
+
+        <button class="btn btn-instagram" onclick="copyInstagramPackage()">
+          <span>📋 Copy Caption & Hashtags</span>
+        </button>
+
+        <div class="growth-tip-box">
+          <span>💡</span>
+          <div>
+            <strong>Reels Algorithm Tip:</strong> Best times to post: <strong>11:00 AM – 1:00 PM</strong> & <strong>7:00 PM – 9:00 PM</strong>. Pair with trending Instagram audio for maximum reach!
+          </div>
+        </div>
+      </div>
+
+      <!-- Recent Reels Studio Archive -->
+      <div class="ig-package-card" id="reels-gallery-card" style="display: flex; flex-direction: column; gap: 0.75rem; width: 320px;">
+        <div class="ig-package-header">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <span style="font-size: 1.05rem;">🎞️</span>
+            <strong style="font-size: 0.9rem; color: #FFF;">Recent Reels Studio Archive</strong>
+          </div>
+          <button class="mini-btn" onclick="fetchRecentReels()" title="Refresh List">🔄 Refresh</button>
+        </div>
+        <div id="reels-gallery-list" style="display: flex; flex-direction: column; gap: 0.5rem; max-height: 240px; overflow-y: auto;">
+          <div style="font-size: 0.76rem; color: var(--text-sub); text-align: center; padding: 1rem;">Loading generated reels...</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- Settings & API Keys Modal -->
+  <div class="modal-overlay" id="settings-modal">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 style="font-family: 'Outfit', sans-serif; font-size: 1.15rem; color: #FFF;">⚙️ Video Sourcing & API Keys</h3>
+        <button class="close-btn" onclick="closeSettingsModal()">&times;</button>
+      </div>
+
+      <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:12px;">
+        Leave fields blank to keep saved keys. Saving here does not change your FFmpeg paths.
+      </p>
+      <div class="form-group">
+        <label class="form-label" for="pixabay-key-input">Pixabay API Key (additional stock videos)</label>
+        <div style="display:flex;gap:0.5rem;">
+          <input type="password" class="text-input" id="pixabay-key-input" autocomplete="off" placeholder="Paste your Pixabay API key">
+          <button class="btn btn-secondary" style="white-space:nowrap;padding:0.4rem 0.85rem;" type="button" onclick="testPixabayKeyConnection()">Test Key</button>
+        </div>
+        <p id="pixabay-key-status" style="font-size:0.74rem;color:var(--text-sub);margin-top:0.35rem;">Test a pasted key or your saved key, then save new keys.</p>
+        <a href="https://pixabay.com/api/docs/" target="_blank" rel="noopener noreferrer" style="font-size:0.74rem;color:var(--primary);">Open Pixabay API documentation / your key</a>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Pexels Free API Key (Real 4K/1080p Stock Videos)</label>
+        <div style="display: flex; gap: 0.5rem;">
+          <input type="password" class="text-input" id="pexels-key-input" placeholder="Paste an existing Pexels API key">
+          <button class="btn btn-secondary" style="white-space: nowrap; padding: 0.4rem 0.85rem;" type="button" onclick="testPexelsKeyConnection()">🔍 Test Key</button>
+        </div>
+        <p id="pexels-key-status" style="font-size: 0.74rem; color: var(--text-sub); margin-top: 0.35rem;">
+          Searches stock video matching scene keywords; available footage varies. 
+          <a href="https://www.pexels.com/api/" target="_blank" style="color: var(--primary); text-decoration: underline;">Pexels API access status &rarr;</a>
+        </p>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Gemini API Key (Google AI Studio)</label>
+        <input type="password" class="text-input" id="gemini-key-input" placeholder="Paste Gemini API key (Optional for custom scripts)">
+        <p style="font-size: 0.74rem; color: var(--text-sub);">
+          <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color: var(--primary); text-decoration: underline;">Get free Gemini key &rarr;</a>
+        </p>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 0.75rem; margin-top: 0.5rem;">
+        <button class="btn btn-secondary" onclick="closeSettingsModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveSettings()">Save Configuration</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- B-Roll Stock Library Modal -->
+  <div class="modal-overlay" id="library-modal">
+    <div class="modal-dialog" style="max-width: 650px;">
+      <div class="modal-header">
+        <h3 style="font-family: 'Outfit', sans-serif; font-size: 1.15rem; color: #FFF;">🎬 Curated B-Roll Stock Clips</h3>
+        <button class="close-btn" onclick="closeLibraryModal()">&times;</button>
+      </div>
+
+      <p style="font-size: 0.8rem; color: var(--text-muted);">
+        Select a real 1080x1920 video clip to attach to <strong id="library-target-scene-label">Scene 1</strong>:
+      </p>
+
+      <div class="video-grid" id="library-video-grid">
+        <div style="color: var(--text-sub); padding: 2rem; text-align: center; grid-column: span 2;">
+          Loading video assets...
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Hidden File Input for Scene Video Upload -->
+  <input type="file" id="scene-video-uploader" accept=".mp4,.mov,.webm,.mkv,video/mp4,video/quicktime,video/webm,video/x-matroska" style="display: none;" onchange="handleSceneVideoFileSelected(event)">
+
+  <!-- Notification Toast -->
+  <div class="toast" id="toast">
+    <span id="toast-icon">ℹ️</span>
+    <span id="toast-message" style="font-size: 0.88rem; color: #FFF;">Notification</span>
+  </div>
+
+  <footer style="padding:16px;text-align:center;font-size:12px;color:#a0a0b0;">
+    Automatic stock footage, when selected, is provided by
+    <a href="https://www.pexels.com" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;">Pexels</a> or
+    <a href="https://pixabay.com" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;">Pixabay</a>.
+    Review each clip and its saved source information before publishing.
+  </footer>
+  <script>
+    let currentStoryboard = null;
+    let customClips = {}; // scene key -> server-issued media identifier
+    let customClipPreviews = {};
+    let pendingUploads = 0;
+    let sceneProviders = {}; // scene_1 -> 'auto' | 'curated' | 'pexels' | 'pixabay' | 'ai_video' | 'procedural' | 'upload'
+    let pollInterval = null;
+    let targetUploadScene = 1;
+
+    function applyPreset(topic, niche, duration, lang = 'Telugu') {
+      document.getElementById('topic-input').value = topic;
+      document.getElementById('niche-select').value = niche;
+      document.getElementById('duration-select').value = duration;
+      if (document.getElementById('language-select')) {
+        document.getElementById('language-select').value = lang;
+        handleLanguageChange();
+      }
+      handleGenerateStoryboard();
+    }
+
+    function handleLanguageChange() {
+      const lang = document.getElementById('language-select').value;
+      const voiceSelect = document.getElementById('voice-select');
+      if (lang === 'Telugu') {
+        voiceSelect.value = 'te-IN-MohanNeural';
+      } else {
+        voiceSelect.value = 'en-US-ChristopherNeural';
+      }
+    }
+
+    async function handleGenerateStoryboard() {
+      const topic = document.getElementById('topic-input').value.trim();
+      if (!topic) {
+        showToast('Please enter a topic or click a template chip.', 'error');
+        return;
+      }
+
+      const niche = document.getElementById('niche-select').value;
+      const duration = parseInt(document.getElementById('duration-select').value, 10);
+      const language = document.getElementById('language-select') ? document.getElementById('language-select').value : 'Telugu';
+      const btn = document.getElementById('btn-generate-storyboard');
+
+      btn.disabled = true;
+      btn.innerHTML = '<span>⏳ Synthesizing 8-Scene Storyboard...</span>';
+
+      try {
+        const res = await fetch('/api/generate-storyboard', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({topic, niche, duration_sec: duration, language: language})
+        });
+
+        if (!res.ok) throw new Error(await res.text());
+        currentStoryboard = await res.json();
+        renderSourceReport([]);
+        customClips = {}; // reset custom overrides
+        customClipPreviews = {};
+        sceneProviders = {}; // reset model overrides
+        renderStoryboardUI(currentStoryboard);
+        renderInstagramPackage(currentStoryboard);
+
+        document.getElementById('btn-render-video').style.display = 'block';
+        showToast('✨ Multi-Scene Storyboard synthesized! Review scenes & clips.', 'success');
+      } catch (err) {
+        console.error(err);
+        showToast('Failed to generate storyboard: ' + err.message, 'error');
+      } finally {
+        btn.disabled = false;
+        btn.innerHTML = '<span>✨ Synthesize AI Storyboard & Script</span>';
+      }
+    }
+
+    const CATEGORY_MAP = {
+      'hook': '🔥 Hook (0-4s)',
+      'tool_presentation': '🛠️ Tool Presentation',
+      'demo': '🎬 Demo / Action',
+      'summary': '📊 Summary Recap',
+      'cta': '📢 Call To Action'
+    };
+
+    function renderStoryboardUI(sb) {
+      const container = document.getElementById('storyboard-list');
+      document.getElementById('storyboard-status').textContent = `"${sb.title}" • ${sb.scenes.length} Scenes (${sb.language || 'Telugu'} - ${sb.niche})`;
+
+      const batchBar = `
+        <div class="batch-provider-bar" style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap; margin-bottom:1rem; padding:0.65rem 0.9rem; background:var(--bg-surface-elevated); border:1px solid var(--border-color); border-radius:10px;">
+          <span style="font-size:0.75rem; color:var(--text-muted); font-weight:700;">⚡ Set All Scenes To:</span>
+          <button class="mini-btn" type="button" onclick="applyProviderToAll('curated')">🎬 Curated Stock (1080p)</button>
+          <button class="mini-btn" type="button" disabled title="No video-generation API is connected">AI Video: not connected</button>
+          <button class="mini-btn" type="button" onclick="applyProviderToAll('pexels')">🌐 Pexels Video API</button>
+          <button class="mini-btn" type="button" onclick="applyProviderToAll('pixabay')">Pixabay Stock Video</button>
+          <button class="mini-btn" type="button" onclick="applyProviderToAll('auto')">⚡ Auto Router</button>
+        </div>
+      `;
+
+      container.innerHTML = batchBar + sb.scenes.map((scene, idx) => {
+        const sceneNum = scene.scene_number || (idx + 1);
+        const sceneKey = `scene_${sceneNum}`;
+        const hasCustom = customClips[sceneKey];
+        const catBadge = CATEGORY_MAP[scene.scene_category] || `🎬 Scene ${sceneNum}`;
+        const currentProvider = sceneProviders[sceneKey] || 'auto';
+
+        return `
+        <div class="scene-card" id="scene-card-${idx}">
+          <div class="scene-card-header">
+            <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+              <span class="scene-tag">${catBadge}</span>
+              <select class="scene-provider-select" id="provider-select-${sceneNum}" onchange="updateSceneProvider(${sceneNum}, this.value)" title="Select Video Provider Model">
+                <option value="auto" ${currentProvider === 'auto' ? 'selected' : ''}>⚡ Auto: Pexels, Pixabay, then matching local footage</option>
+                <option value="curated" ${currentProvider === 'curated' ? 'selected' : ''}>🎬 Matched Local Library</option>
+                <option value="pexels" ${currentProvider === 'pexels' ? 'selected' : ''}>🌐 Pexels Stock Video (existing API key required)</option>
+                <option value="pixabay" ${currentProvider === 'pixabay' ? 'selected' : ''}>Pixabay Stock Video (API key required)</option>
+                <option value="ai_video" disabled>AI video API - not connected (upload generated MP4)</option>
+                ${hasCustom ? `<option value="upload" ${currentProvider === 'upload' ? 'selected' : ''}>📁 User Upload Clip</option>` : ''}
+              </select>
+            </div>
+            <div style="display: flex; align-items: center; gap: 0.4rem;">
+              <button class="mini-btn" id="voice-btn-${idx}" onclick="previewSceneVoice(${idx})" title="Listen to spoken audio for this scene">🔊 Preview</button>
+              <span class="scene-duration">⏱️ ~${scene.duration_estimate_sec}s</span>
+            </div>
+          </div>
+          <div style="font-size: 0.72rem; color: var(--primary); font-weight: 600; margin-top: 0.2rem; margin-bottom: 0.2rem; display: flex; justify-content: space-between;">
+            <span>🎙️ Spoken Telugu (AI Voice Script):</span>
+          </div>
+          <textarea class="scene-narration" oninput="updateSceneNarration(${idx}, this.value)" title="Spoken Telugu Narration (for voice)" style="font-size: 0.92rem; line-height: 1.4; min-height: 60px;">${escapeHtml(scene.narration)}</textarea>
+
+          <div style="font-size: 0.72rem; color: #F59E0B; font-weight: 600; margin-top: 0.4rem; margin-bottom: 0.2rem; display: flex; justify-content: space-between;">
+            <span>💬 Reel Subtitles (Roman Telugu / English Alphabet):</span>
+          </div>
+          <textarea class="scene-narration" oninput="updateSceneRomanSubtitles(${idx}, this.value)" title="Roman Telugu subtitles (displayed on video)" style="font-size: 0.88rem; line-height: 1.4; min-height: 52px; border-color: rgba(245, 158, 11, 0.35); font-family: 'JetBrains Mono', monospace; color: #FDE68A;">${escapeHtml(scene.roman_subtitles || scene.narration)}</textarea>
+
+          <div class="scene-broll-box">
+            <div class="broll-status-row">
+              <span class="broll-badge" id="broll-badge-${sceneNum}">
+                ${hasCustom ? '🟢 Custom Video Attached' : `🎥 B-Roll Keyword: "${escapeHtml(scene.search_keyword)}"`}
+              </span>
+              <div class="broll-actions">
+                <button class="mini-btn" onclick="triggerSceneVideoUpload(${sceneNum})">📁 Upload Clip</button>
+                ${hasCustom ? `<button class="mini-btn" onclick="removeSceneClip(${sceneNum})">Remove Clip</button>
+                <button class="mini-btn" onclick="applyClipToAll(${sceneNum})">Use Clip for All Scenes</button>` : ''}
+                <button class="mini-btn" onclick="openLibraryModal(${sceneNum})">🎬 Choose Stock</button>
+              </div>
+            </div>
+            <label style="display:block;font-size:0.73rem;margin:8px 0;color:var(--text-muted);">
+              Footage search (English keywords, max 100 characters)
+              <input class="text-input" type="text" maxlength="100" value="${escapeHtml(scene.search_keyword || '')}"
+                oninput="updateSceneKeyword(${idx}, this.value)" placeholder="Example: laptop coding"
+                aria-label="Footage search keywords for scene ${sceneNum}">
+            </label>
+            ${customClipPreviews[sceneKey] ? `<video src="${escapeHtml(customClipPreviews[sceneKey])}" controls muted playsinline preload="metadata" style="width:120px;max-height:220px;margin:10px 0;"></video>` : ''}
+            <div style="font-size: 0.73rem; color: #94A3B8; font-style: italic;">
+              <strong>Model Prompt (EN):</strong> ${escapeHtml(scene.visual_prompt)}
+            </div>
+          </div>
+        </div>
+      `;
+      }).join('');
+    }
+
+    function updateSceneProvider(sceneNum, provider) {
+      const key = `scene_${sceneNum}`;
+      sceneProviders[key] = provider;
+      // Explicitly changing the source releases the old upload override.
+      if (provider !== 'upload') {
+        delete customClips[key];
+        delete customClipPreviews[key];
+      }
+      renderStoryboardUI(currentStoryboard);
+      if (provider === 'pixabay' && !hasPixabayKey) {
+        showToast('Add your Pixabay API key in API Keys & Sources, or upload a clip.', 'warning');
+      }
+      if (provider === 'pexels' && !hasPexelsKey) {
+        showToast('Pexels requires an existing API key. Upload footage as an alternative.', 'warning');
+      }
+    }
+
+    function removeSceneClip(sceneNum) {
+      const key = `scene_${sceneNum}`;
+      delete customClips[key];
+      delete customClipPreviews[key];
+      sceneProviders[key] = 'auto';
+      renderStoryboardUI(currentStoryboard);
+    }
+
+    function applyClipToAll(sceneNum) {
+      const key = `scene_${sceneNum}`;
+      if (!customClips[key] || !currentStoryboard) return;
+      currentStoryboard.scenes.forEach((scene, idx) => {
+        const other = `scene_${scene.scene_number || idx + 1}`;
+        customClips[other] = customClips[key];
+        customClipPreviews[other] = customClipPreviews[key];
+        sceneProviders[other] = 'upload';
+      });
+      renderStoryboardUI(currentStoryboard);
+      showToast('Clip assigned to all scenes. Each scene currently starts from the beginning of the clip.', 'info');
+    }
+
+    function applyProviderToAll(provider) {
+      if (!currentStoryboard) return;
+      currentStoryboard.scenes.forEach((scene, idx) => {
+        const key = `scene_${scene.scene_number || idx + 1}`;
+        sceneProviders[key] = provider;
+        delete customClips[key];
+        delete customClipPreviews[key];
+      });
+      renderStoryboardUI(currentStoryboard);
+      showToast(`All scenes set to ${provider}; previous manual attachments were released.`, 'info');
+    }
+
+    function renderInstagramPackage(sb) {
+      const card = document.getElementById('ig-package-card');
+      const captionBox = document.getElementById('ig-caption-text');
+      const tagsBox = document.getElementById('ig-hashtags-cloud');
+
+      card.style.display = 'flex';
+      captionBox.textContent = sb.instagram_caption || 'Elevate your daily habits with these proven tips ✨';
+
+      const tags = sb.instagram_hashtags || ['#reels', '#trending', '#explorepage', '#viral'];
+      tagsBox.innerHTML = tags.map(t => `<span class="hashtag-pill">${escapeHtml(t)}</span>`).join('');
+    }
+
+    function copyInstagramPackage() {
+      if (!currentStoryboard) return;
+
+      const caption = currentStoryboard.instagram_caption || '';
+      const tags = (currentStoryboard.instagram_hashtags || []).join(' ');
+      const fullText = `${caption}\n\n.\n.\n${tags}`;
+
+      navigator.clipboard.writeText(fullText).then(() => {
+        showToast('📋 Instagram Caption & Hashtags copied to clipboard!', 'success');
+      }).catch(err => {
+        showToast('Clipboard copy error: ' + err, 'error');
+      });
+    }
+
+    function updateSceneKeyword(idx, value) {
+      if (currentStoryboard && currentStoryboard.scenes[idx]) {
+        currentStoryboard.scenes[idx].search_keyword = value;
+      }
+    }
+
+    function updateSceneNarration(idx, text) {
+      if (currentStoryboard && currentStoryboard.scenes[idx]) {
+        currentStoryboard.scenes[idx].narration = text;
+      }
+    }
+
+    function updateSceneRomanSubtitles(idx, text) {
+      if (currentStoryboard && currentStoryboard.scenes[idx]) {
+        currentStoryboard.scenes[idx].roman_subtitles = text;
+      }
+    }
+
+    let currentPreviewAudio = null;
+    let playingVoiceIdx = null;
+
+    async function previewSceneVoice(idx) {
+      if (!currentStoryboard || !currentStoryboard.scenes[idx]) return;
+      const scene = currentStoryboard.scenes[idx];
+      const text = (scene.narration || '').trim();
+      if (!text) {
+        showToast('Please enter narration text to preview', 'error');
+        return;
+      }
+
+      // If already playing this scene, toggle stop
+      if (currentPreviewAudio && playingVoiceIdx === idx) {
+        currentPreviewAudio.pause();
+        currentPreviewAudio = null;
+        updateVoiceButtonState(playingVoiceIdx, false);
+        playingVoiceIdx = null;
+        return;
+      }
+
+      const voiceSelect = document.getElementById('voice-select');
+      const voiceId = voiceSelect ? voiceSelect.value : 'te-IN-MohanNeural';
+      const btn = document.getElementById(`voice-btn-${idx}`);
+      if (btn) {
+        btn.innerHTML = '⏳ Loading...';
+        btn.disabled = true;
+      }
+
+      try {
+        const res = await fetch('/api/preview-voice', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ text, voice_id: voiceId })
+        });
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+
+        if (currentPreviewAudio) {
+          currentPreviewAudio.pause();
+          if (playingVoiceIdx !== null) updateVoiceButtonState(playingVoiceIdx, false);
+        }
+
+        currentPreviewAudio = new Audio(data.audio_url);
+        playingVoiceIdx = idx;
+        updateVoiceButtonState(idx, true);
+
+        currentPreviewAudio.onended = () => {
+          updateVoiceButtonState(idx, false);
+          currentPreviewAudio = null;
+          playingVoiceIdx = null;
+        };
+
+        currentPreviewAudio.onerror = () => {
+          showToast('Audio playback failed', 'error');
+          updateVoiceButtonState(idx, false);
+          currentPreviewAudio = null;
+          playingVoiceIdx = null;
+        };
+
+        await currentPreviewAudio.play();
+        showToast(`🔊 Playing scene ${idx + 1} voice preview (${data.duration}s)...`, 'info');
+      } catch (err) {
+        showToast(`Voice preview error: ${err.message}`, 'error');
+        updateVoiceButtonState(idx, false);
+      } finally {
+        if (btn) btn.disabled = false;
+      }
+    }
+
+    function updateVoiceButtonState(idx, isPlaying) {
+      const btn = document.getElementById(`voice-btn-${idx}`);
+      if (!btn) return;
+      if (isPlaying) {
+        btn.innerHTML = '⏹️ Stop';
+        btn.classList.add('playing');
+      } else {
+        btn.innerHTML = '🔊 Preview';
+        btn.classList.remove('playing');
+      }
+    }
+
+    async function fetchRecentReels() {
+      const galleryList = document.getElementById('reels-gallery-list');
+      if (!galleryList) return;
+      try {
+        const res = await fetch('/api/reels');
+        if (!res.ok) return;
+        const reels = await res.json();
+        if (!reels || reels.length === 0) {
+          galleryList.innerHTML = '<div style="font-size: 0.76rem; color: var(--text-sub); text-align: center; padding: 1rem;">No reels generated yet. Click Render Video to create one!</div>';
+          return;
+        }
+
+        galleryList.innerHTML = reels.slice(0, 8).map(r => {
+          const dateStr = new Date(r.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          return `
+            <div class="reel-item">
+              <div class="reel-item-info">
+                <span class="reel-item-title">${escapeHtml(r.filename)}</span>
+                <span class="reel-item-meta">💾 ${r.size_mb} MB • 🕒 ${dateStr}</span>
+              </div>
+              <div class="reel-item-actions">
+                <button class="mini-btn" onclick="loadReelToPlayer('${escapeHtml(r.url)}', '${escapeHtml(r.filename)}')">▶️ Play</button>
+                <a href="${escapeHtml(r.url)}" download="${escapeHtml(r.filename)}" class="mini-btn" style="text-decoration:none;">📥</a>
+              </div>
+            </div>
+          `;
+        }).join('');
+      } catch (err) {
+        console.error('Failed to load reels gallery:', err);
+      }
+    }
+
+    function loadReelToPlayer(url, filename) {
+      const player = document.getElementById('main-video-player');
+      const downloadBtn = document.getElementById('btn-download');
+      if (player) {
+        player.src = url;
+        player.load();
+        player.play().catch(() => {});
+      }
+      if (downloadBtn) {
+        downloadBtn.href = url;
+        downloadBtn.download = filename;
+      }
+      showToast(`🎬 Loaded ${filename} into player!`, 'success');
+    }
+
+    function triggerSceneVideoUpload(sceneNumber) {
+      targetUploadScene = sceneNumber;
+      document.getElementById('scene-video-uploader').click();
+    }
+
+    async function handleSceneVideoFileSelected(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+      const sceneNumber = targetUploadScene;
+      const storyboardAtStart = currentStoryboard;
+      if (file.size > 250 * 1024 * 1024) {
+        showToast('Upload must be 250 MB or smaller.', 'error');
+        event.target.value = '';
+        return;
+      }
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('scene_number', sceneNumber);
+      pendingUploads++;
+      showToast(`Uploading and validating Scene ${sceneNumber} footage...`, 'info');
+      try {
+        const res = await fetch('/api/upload-scene-video', {method: 'POST', body: formData});
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.detail || 'Upload failed');
+        if (currentStoryboard !== storyboardAtStart) {
+          showToast('Storyboard changed during upload. Attach the clip to the new storyboard again.', 'warning');
+          return;
+        }
+        customClips[data.scene_key] = data.asset_id || data.file_path;
+        customClipPreviews[data.scene_key] = data.preview_url;
+        sceneProviders[data.scene_key] = 'upload';
+        renderStoryboardUI(currentStoryboard);
+        showToast(`Scene ${sceneNumber}: validated ${data.width}x${data.height} video, ${data.duration}s.`, 'success');
+      } catch (err) {
+        showToast(`Upload failed: ${err.message}`, 'error');
+      } finally {
+        pendingUploads--;
+        event.target.value = '';
+      }
+    }
+
+    /* B-Roll Stock Library Modal */
+    async function openLibraryModal(sceneNumber) {
+      targetUploadScene = sceneNumber;
+      document.getElementById('library-target-scene-label').textContent = `Scene ${sceneNumber}`;
+      document.getElementById('library-modal').classList.add('open');
+
+      const grid = document.getElementById('library-video-grid');
+      try {
+        const res = await fetch('/api/broll-library');
+        if (!res.ok) throw new Error(await res.text());
+        const clips = await res.json();
+
+        if (clips.length === 0) {
+          grid.innerHTML = '<div style="color: var(--text-sub); grid-column: span 2; text-align: center;">No stock clips found.</div>';
+          return;
+        }
+
+        grid.innerHTML = clips.map(clip => `
+          <div class="video-grid-item" onclick="selectLibraryClip('${clip.filename}', '${escapeHtml(clip.title)}')">
+            <video class="video-grid-preview" src="${clip.url}" muted loop onmouseover="this.play()" onmouseout="this.pause()"></video>
+            <div style="font-size: 0.8rem; font-weight: 600; color: #FFF;">${escapeHtml(clip.title)}</div>
+            <div style="font-size: 0.7rem; color: var(--primary);">${escapeHtml(clip.kind || 'video')} - click to assign</div>
+          </div>
+        `).join('');
+      } catch (err) {
+        grid.innerHTML = `<div style="color: var(--danger); grid-column: span 2;">Error loading library: ${err.message}</div>`;
+      }
+    }
+
+    function selectLibraryClip(filename, title) {
+      const sceneKey = `scene_${targetUploadScene}`;
+      // Map to server asset path or filename
+      customClips[sceneKey] = filename;
+      customClipPreviews[sceneKey] = `/api/video/asset/${encodeURIComponent(filename)}`;
+      sceneProviders[sceneKey] = 'curated';
+
+      const badge = document.getElementById(`broll-badge-${targetUploadScene}`);
+      if (badge) {
+        badge.innerHTML = `🎬 Stock: ${title}`;
+      }
+      const select = document.getElementById(`provider-select-${targetUploadScene}`);
+      if (select) {
+        select.value = 'curated';
+      }
+      closeLibraryModal();
+      renderStoryboardUI(currentStoryboard);
+      showToast(`Assigned "${title}" to Scene ${targetUploadScene}!`, 'success');
+    }
+
+    function closeLibraryModal() {
+      document.getElementById('library-modal').classList.remove('open');
+    }
+
+    /* Settings Modal: keys are sent only to this local backend, never returned. */
+    let hasPexelsKey = false;
+    let hasPixabayKey = false;
+    let hasGeminiKey = false;
+
+    async function checkApiSettings() {
+      try {
+        const res = await fetch('/api/settings');
+        if (!res.ok) return;
+        const data = await res.json();
+        hasPexelsKey = !!data.has_pexels_key;
+        hasPixabayKey = !!data.has_pixabay_key;
+        hasGeminiKey = !!data.has_gemini_key;
+        updateSourceBadge();
+      } catch (err) {
+        console.error('Settings check failed.');
+      }
+    }
+
+    function updateSourceBadge() {
+      const pill = document.getElementById('stock-status-pill');
+      if (!pill) return;
+      pill.textContent = `Pixabay: ${hasPixabayKey ? 'key set' : 'not set'} | Pexels: ${hasPexelsKey ? 'key set' : 'not set'}`;
+      pill.title = 'Key presence is not a connectivity check. Click to configure or test your keys.';
+      pill.style.color = hasPixabayKey || hasPexelsKey ? '#10B981' : '#94A3B8';
+      document.getElementById('pixabay-key-input').placeholder = hasPixabayKey ? 'Key saved - leave blank to keep it' : 'Paste your Pixabay API key';
+      document.getElementById('pexels-key-input').placeholder = hasPexelsKey ? 'Key saved - leave blank to keep it' : 'Paste an existing Pexels API key';
+      document.getElementById('gemini-key-input').placeholder = hasGeminiKey ? 'Key saved - leave blank to keep it' : 'Paste Gemini key for custom AI storyboards';
+    }
+
+    async function testStockKey(provider) {
+      const key = document.getElementById(`${provider}-key-input`).value.trim();
+      const status = document.getElementById(`${provider}-key-status`);
+      const configured = provider === 'pixabay' ? hasPixabayKey : hasPexelsKey;
+      if (!key && !configured) {
+        status.textContent = `Paste your ${provider} API key first.`;
+        return;
+      }
+      status.textContent = `Testing ${provider} Video API...`;
+      try {
+        const payload = key ? {[`${provider}_api_key`]: key} : {};
+        const res = await fetch(`/api/test-${provider}-key`, {
+          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Key test failed.');
+        status.textContent = data.message;
+        // Testing a typed key does not configure the running app; saving does.
+        showToast(data.valid ? 'Key accepted. Save Configuration for new keys.' : data.message, data.valid ? 'success' : 'warning');
+      } catch (err) {
+        status.textContent = `Test failed: ${err.message}`;
+      }
+    }
+
+    function testPixabayKeyConnection() { return testStockKey('pixabay'); }
+    function testPexelsKeyConnection() { return testStockKey('pexels'); }
+    function openSettingsModal() { document.getElementById('settings-modal').classList.add('open'); }
+    function closeSettingsModal() { document.getElementById('settings-modal').classList.remove('open'); }
+
+    async function saveSettings() {
+      const payload = {};
+      for (const provider of ['pixabay', 'pexels', 'gemini']) {
+        const value = document.getElementById(`${provider}-key-input`).value.trim();
+        if (value) payload[`${provider}_api_key`] = value;
+      }
+      try {
+        const res = await fetch('/api/settings', {
+          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not save keys.');
+        for (const provider of ['pixabay', 'pexels', 'gemini']) {
+          document.getElementById(`${provider}-key-input`).value = '';
+        }
+        await checkApiSettings();
+        showToast('Configuration saved. Existing FFmpeg paths were preserved.', 'success');
+        closeSettingsModal();
+      } catch (err) {
+        showToast('Failed to save settings: ' + err.message, 'error');
+      }
+    }
+
+    function renderSourceReport(report) {
+      const box = document.getElementById('scene-source-report');
+      box.replaceChildren();
+      const selected = (report || []).filter(item => item.status === 'selected');
+      if (!selected.length) return;
+      const title = document.createElement('strong');
+      title.textContent = 'Footage used in this render';
+      box.appendChild(title);
+      for (const item of selected) {
+        const row = document.createElement('div');
+        row.style.cssText = 'padding:8px 0;border-bottom:1px solid var(--border-color);overflow-wrap:anywhere;';
+        const creator = item.creator && item.creator.name ? ` by ${item.creator.name}` : '';
+        const repeated = item.reused ? ' (reused: no unused candidate selected)' : '';
+        row.textContent = `Scene ${item.scene_number}: ${item.provider}${creator}${repeated}`;
+        if (item.source_url) {
+          try {
+            const source = new URL(item.source_url);
+            const host = source.hostname;
+            if (source.protocol === 'https:' && ['pixabay.com', 'www.pixabay.com', 'pexels.com', 'www.pexels.com'].includes(host)) {
+              const link = document.createElement('a');
+              link.href = source.href;
+              link.target = '_blank';
+              link.rel = 'noopener noreferrer';
+              link.style.cssText = 'display:block;color:var(--primary);text-decoration:underline;';
+              link.textContent = `View original on ${item.provider}`;
+              row.appendChild(link);
+            }
+          } catch (err) { /* Do not render unsafe or malformed source links. */ }
+        }
+        box.appendChild(row);
+      }
+    }
+
+    /* Video Rendering Pipeline */
+    async function handleRenderVideo() {
+      if (!currentStoryboard) {
+        showToast('Please generate a storyboard first.', 'error');
+        return;
+      }
+
+      if (pendingUploads > 0) { showToast('Wait for clip uploads to finish.', 'warning'); return; }
+      const voiceId = document.getElementById('voice-select').value;
+      const musicTrack = document.getElementById('music-select').value;
+      const subStyle = document.getElementById('subtitle-style-select') ? document.getElementById('subtitle-style-select').value : 'hormozi_gold';
+      const subPos = document.getElementById('subtitle-pos-select') ? document.getElementById('subtitle-pos-select').value : 'bottom_safe';
+      const subFormat = document.getElementById('subtitle-format-select') ? document.getElementById('subtitle-format-select').value : 'roman';
+      const progressBox = document.getElementById('progress-box');
+      const renderBtn = document.getElementById('btn-render-video');
+      const synthBtn = document.getElementById('btn-generate-storyboard');
+
+      renderBtn.disabled = true;
+      synthBtn.disabled = true;
+      renderBtn.innerHTML = '<span>Checking footage and rendering...</span>';
+      progressBox.style.display = 'block';
+      renderSourceReport([]);
+      updateProgress(10, 'Submitting generation request to compositor...');
+
+      try {
+        const payload = {
+          storyboard: currentStoryboard, voice_id: voiceId,
+          music_track: musicTrack === 'none' ? null : musicTrack,
+          custom_clips: customClips, scene_providers: sceneProviders,
+          subtitle_style: subStyle, subtitle_position: subPos, subtitle_format: subFormat,
+          allow_photo_motion: document.getElementById('allow-photo-motion').checked
+        };
+        const preflight = await fetch('/api/preflight', {
+          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+        });
+        if (!preflight.ok) throw new Error(await preflight.text());
+        const readiness = await preflight.json();
+        document.getElementById('render-diagnostics').textContent =
+          [...(readiness.errors || []), ...(readiness.warnings || [])].join('\n');
+        if (!readiness.ready) throw new Error((readiness.errors || []).join(' | '));
+        const res = await fetch('/api/render-video', {
+          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+        });
+
+        if (!res.ok) throw new Error(await res.text());
+        const data = await res.json();
+        localStorage.setItem('activeShortsJob', data.job_id);
+        pollJobStatus(data.job_id);
+      } catch (err) {
+        console.error(err);
+        showToast('Render error: ' + err.message, 'error');
+        renderBtn.disabled = false;
+        synthBtn.disabled = false;
+        renderBtn.innerHTML = '<span>🚀 Render 1080x1920 Instagram Reel</span>';
+        progressBox.style.display = 'none';
+      }
+    }
+
+    function pollJobStatus(jobId) {
+      if (pollInterval) clearInterval(pollInterval);
+      const renderBtn = document.getElementById('btn-render-video');
+      const synthBtn = document.getElementById('btn-generate-storyboard');
+      const progressBox = document.getElementById('progress-box');
+
+      progressBox.style.display = 'block';
+      renderBtn.disabled = true;
+      synthBtn.disabled = true;
+      renderBtn.innerHTML = '<span>⏳ Rendering Reel...</span>';
+
+      pollInterval = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/job/${jobId}`);
+          if (res.status === 404) {
+            clearInterval(pollInterval);
+            pollInterval = null;
+            localStorage.removeItem('activeShortsJob');
+            renderBtn.disabled = false;
+            synthBtn.disabled = false;
+            renderBtn.innerHTML = '<span>🚀 Render 1080x1920 Instagram Reel</span>';
+            progressBox.style.display = 'none';
+            loadLatestVideo();
+            return;
+          }
+          if (!res.ok) return;
+          const job = await res.json();
+
+          updateProgress(job.progress, job.message);
+          if (job.visual_report) renderSourceReport(job.visual_report);
+
+          if (job.status === 'COMPLETED') {
+            clearInterval(pollInterval);
+            pollInterval = null;
+            localStorage.removeItem('activeShortsJob');
+            renderBtn.disabled = false;
+            synthBtn.disabled = false;
+            renderBtn.innerHTML = '<span>🚀 Render 1080x1920 Instagram Reel</span>';
+            progressBox.style.display = 'none';
+            
+            // Update player and download
+            const player = document.getElementById('main-video-player');
+            player.src = job.video_url;
+            player.load();
+            player.play().catch(() => {});
+
+            const dlBtn = document.getElementById('btn-download');
+            dlBtn.href = job.video_url;
+            dlBtn.removeAttribute('aria-disabled');
+            dlBtn.download = `shortsgenius_reel_${jobId}.mp4`;
+
+            showToast('MP4 rendered and validated. Review it before publishing.', 'success');
+            document.getElementById('render-diagnostics').textContent = (job.visual_report || []).map(item => `Scene ${item.scene_number}: ${item.provider} - ${item.status}${item.file ? ' (' + item.file + ')' : ''}${item.reason ? ': ' + item.reason : ''}`).join('\n');
+            fetchRecentReels();
+          } else if (job.status === 'FAILED') {
+            clearInterval(pollInterval);
+            pollInterval = null;
+            localStorage.removeItem('activeShortsJob');
+            renderBtn.disabled = false;
+            synthBtn.disabled = false;
+            renderBtn.innerHTML = '<span>🚀 Render 1080x1920 Instagram Reel</span>';
+            progressBox.style.display = 'none';
+            showToast('Rendering failed: ' + job.error, 'error');
+            document.getElementById('render-diagnostics').textContent = job.error || 'Unknown rendering error';
+          }
+        } catch (err) {
+          console.error(err);
+        }
+      }, 1000);
+    }
+
+    async function loadLatestVideo() {
+      try {
+        const res = await fetch('/api/latest-video');
+        if (res.ok) {
+          const data = await res.json();
+          if (data.video_url) {
+            const player = document.getElementById('main-video-player');
+            player.src = data.video_url;
+            player.load();
+            const dlBtn = document.getElementById('btn-download');
+            dlBtn.href = data.video_url;
+            dlBtn.removeAttribute('aria-disabled');
+            dlBtn.download = data.filename;
+          }
+        }
+      } catch (e) {}
+    }
+
+    window.addEventListener('DOMContentLoaded', async () => {
+      document.getElementById('main-video-player').addEventListener('error', () => {
+        document.getElementById('render-diagnostics').textContent = 'Video playback failed. Check the final MP4 and the job logs.';
+      });
+      checkApiSettings();
+      const activeJob = localStorage.getItem('activeShortsJob');
+      if (activeJob) {
+        pollJobStatus(activeJob);
+      }
+      loadLatestVideo();
+      fetchRecentReels();
+    });
+
+    function updateProgress(percent, msg) {
+      document.getElementById('progress-bar-fill').style.width = percent + '%';
+      document.getElementById('progress-percent').textContent = percent + '%';
+      document.getElementById('progress-detail').textContent = msg;
+    }
+
+    function showToast(msg, type = 'info') {
+      const toast = document.getElementById('toast');
+      document.getElementById('toast-message').textContent = msg;
+      document.getElementById('toast-icon').textContent = type === 'success' ? '✅' : (type === 'error' ? '⚠️' : 'ℹ️');
+      toast.classList.add('show');
+      setTimeout(() => toast.classList.remove('show'), 3500);
+    }
+
+    function escapeHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    }
+  </script>
+</body>
+</html>

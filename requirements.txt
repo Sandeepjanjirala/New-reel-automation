@@ -1,0 +1,9 @@
+# Python 3.10+; install system FFmpeg AND ffprobe separately.
+fastapi>=0.110,<1
+uvicorn>=0.28,<1
+edge-tts==7.2.8
+pillow>=10.2,<13
+requests>=2.31,<3
+python-dotenv>=1.0,<2
+pydantic>=2.6,<3
+python-multipart>=0.0.18,<1

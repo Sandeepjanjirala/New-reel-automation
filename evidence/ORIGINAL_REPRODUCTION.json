@@ -1,0 +1,68 @@
+{
+  "gym_scene_curated_choice": {
+    "filename": "facts_cosmos.mp4",
+    "provider": "CuratedStockLibrary"
+  },
+  "valid_curated": {
+    "returned": "valid_curated_final.mp4",
+    "exists": true,
+    "size": 3289173,
+    "probe": {
+      "programs": [],
+      "stream_groups": [],
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 1080,
+          "height": 1920,
+          "r_frame_rate": "30/1"
+        },
+        {
+          "codec_name": "aac",
+          "codec_type": "audio",
+          "r_frame_rate": "0/0"
+        }
+      ],
+      "format": {
+        "duration": "1.221333"
+      }
+    }
+  },
+  "invalid_input": {
+    "returned": "invalid_input_final.mp4",
+    "exists": false,
+    "size": 0
+  },
+  "unequal_lengths": {
+    "returned": "unequal_lengths_final.mp4",
+    "exists": true,
+    "size": 3289173,
+    "probe": {
+      "programs": [],
+      "stream_groups": [],
+      "streams": [
+        {
+          "codec_name": "h264",
+          "codec_type": "video",
+          "width": 1080,
+          "height": 1920,
+          "r_frame_rate": "30/1"
+        },
+        {
+          "codec_name": "aac",
+          "codec_type": "audio",
+          "r_frame_rate": "0/0"
+        }
+      ],
+      "format": {
+        "duration": "1.221333"
+      }
+    }
+  },
+  "procedural_filter": "gradients=s=1080x1920:rate=30:c0=0x0F172A:c1=0x00F2FE:x0=540:y0=960:r=650:type=radial",
+  "gradient_rate_help": [
+    "   rate              <video_rate> ..FV....... set frame rate (default \"25\")",
+    "   r                 <video_rate> ..FV....... set frame rate (default \"25\")"
+  ]
+}

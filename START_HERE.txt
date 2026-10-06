@@ -1,0 +1,58 @@
+SHORTSGENIUS_REPAIRED - PIXABAY FEATURE UPDATE
+
+This updates your EXISTING project. It is not the Claude project replacement.
+Your working .env, FFmpeg paths, uploads and reels are kept.
+No FFmpeg reinstall or new Python packages are required.
+
+1. STOP THE SERVER
+   In its PowerShell window, press Ctrl+C.
+
+2. INSTALL THE UPDATE
+   Extract this ZIP first. Do not run files from inside the ZIP preview.
+   Open the ShortsGenius_Pixabay_Update folder.
+   Double-click INSTALL_UPDATE.bat.
+   Choose the EXISTING project folder:
+   C:\Users\Sandeep.J\Documents\ShortsGenius_Repaired
+   Press Enter if this folder is proposed. Type Y to confirm.
+   Wait for UPDATE INSTALLED.
+
+3. START YOUR EXISTING APP
+   Use the same PowerShell / Python environment as before:
+   cd "C:\Users\Sandeep.J\Documents\ShortsGenius_Repaired"
+   python run_server.py
+   Open http://127.0.0.1:8080 and press Ctrl+F5.
+
+4. ADD YOUR PIXABAY KEY IN THE APP
+   API Keys & Sources > Pixabay API Key > paste YOUR key
+   > Test Key > Save Configuration.
+   The supplied Claude ZIP contains a blank field, NOT a working key.
+   Use the Pixabay documentation/key link inside the dialog to access your key.
+   Do not paste the key into chat. Do not recreate or overwrite .env.
+
+5. MAKE A REEL
+   Create a storyboard. Under Set All Scenes To, click Pixabay Stock Video.
+   Or leave scenes on Auto: Pexels, Pixabay, then matching local footage.
+   Click Render 1080x1920 Instagram Reel.
+   Upload Clip and Use Clip for All Scenes remain available as before.
+
+TESTED / NOT TESTED
+   67 application tests and 12 updater tests passed.
+   FFmpeg media processing tested; live stock/speech API calls were mocked.
+   Native Windows batch execution and live account access were not tested here.
+   Test Key checks your account on your machine (cached checks are labelled).
+
+SAFETY AND BACKUP
+   Changed source files are backed up in your project under _updates.
+   The installer stops on unexpected local source edits. Do not force-copy
+   the payload over a conflict. The core engines and media are not replaced.
+   To undo: stop server, then run RESTORE_PREVIOUS_VERSION.bat.
+   Current .env and media are still preserved when restoring.
+
+   If the batch launcher cannot locate your Python, open PowerShell in THIS
+   extracted update folder and run: python apply_update.py
+   This is an alternative launcher, not an additional required step.
+
+DETAILS
+   PIXABAY_UPDATE.md and PIXABAY_TEST_RESULTS.md explain the merge and limits.
+   The payload is only changed/new files. apply_update.py is the installer.
+   No actual AI-video model, social publisher or scheduler was added.

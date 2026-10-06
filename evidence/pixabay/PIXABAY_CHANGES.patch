@@ -1,0 +1,1449 @@
+--- a/.env.example
++++ b/.env.example
+@@ -2,6 +2,8 @@
+ GEMINI_API_KEY=
+ GEMINI_MODEL=gemini-3.5-flash-lite
+ PEXELS_API_KEY=
++# Optional additional stock-video source; add the key using the UI or here.
++PIXABAY_API_KEY=
+ # Optional absolute paths. Leave blank when both programs are on PATH.
+ FFMPEG_EXE=
+ FFPROBE_EXE=
+--- a/.gitignore
++++ b/.gitignore
+@@ -28,6 +28,9 @@
+ 
+ # Local environments, keys, generated media and tests
+ .env
++.env.*
++!.env.example
++_updates/
+ .venv/
+ venv/
+ __pycache__/
+--- a/backend/app.py
++++ b/backend/app.py
+@@ -34,13 +34,15 @@
+ from .services.media_tools import (MediaError, check_tools, executable, probe_media,
+                                    run_checked, safe_child, validate_final, validate_job_id)
+ from .services.video_providers import (ROUTER, UPLOADS_DIR, MAX_MEDIA_BYTES, VIDEO_EXTENSIONS,
+-                                      resolve_custom_clip, source_kind, pexels_key,
++                                      resolve_custom_clip, source_kind, pexels_key, pixabay_key,
+                                       CuratedStockProvider)
++from .services.pixabay_stock import PixabayClient
++from .services.settings_store import update_env_keys, validate_key
+ 
+ app = FastAPI(
+     title="ShortsGenius API",
+     description="Autonomous AI Short-Form Video & Reel Generator Engine",
+-    version="1.0.0"
++    version="1.1.0"
+ )
+ 
+ # Enable CORS for local web dev
+@@ -93,7 +95,8 @@
+         scenes = _validated_scenes(req.storyboard)
+     except (MediaError, ValueError) as exc:
+         return {"ready": False, "errors": [str(exc)], "warnings": []}
+-    context = {"pexels_api_key": req.pexels_api_key, "allow_photo_motion": req.allow_photo_motion}
++    context = {"pexels_api_key": req.pexels_api_key, "pixabay_api_key": req.pixabay_api_key,
++               "allow_photo_motion": req.allow_photo_motion}
+     for scene in scenes:
+         number = scene["scene_number"]
+         key = f"scene_{number}"
+@@ -105,16 +108,17 @@
+                 if source_kind(path) in {"photo_motion", "procedural"} and not req.allow_photo_motion:
+                     raise MediaError("Selected library item is a photo-animation demo; enable photo motion explicitly or upload footage.")
+                 probe_media(path, require_video=True, decode=True)
+-            elif source == "auto" and pexels_key(context):
++            elif source == "auto" and (pexels_key(context) or pixabay_key(context)):
+                 warnings.append(f"Scene {number}: stock API connectivity and a usable match still need to be verified.")
+             elif source in ("auto", "curated"):
+                 path = CuratedStockProvider().generate_clip(scene, OUTPUT_DIR / "unused.mp4", context)
+                 if not path:
+                     raise MediaError("No matching allowed local footage. Upload a clip or configure a stock-video key.")
+-            elif source == "pexels":
+-                if not pexels_key(context):
+-                    raise MediaError("Pexels key is missing. Upload footage or configure an existing key.")
+-                warnings.append(f"Scene {number}: stock API connectivity and matching are checked during rendering.")
++            elif source in ("pexels", "pixabay"):
++                configured = pexels_key(context) if source == "pexels" else pixabay_key(context)
++                if not configured:
++                    raise MediaError(f"{source.title()} key is missing. Open API Keys & Sources or upload footage.")
++                warnings.append(f"Scene {number}: {source.title()} connectivity and matching are checked during rendering.")
+             elif source == "procedural" and req.allow_photo_motion:
+                 warnings.append(f"Scene {number}: a demo gradient was explicitly selected; this is not footage.")
+             else:
+@@ -136,6 +140,7 @@
+     voice_id: str = DEFAULT_VOICE
+     music_track: Optional[str] = "lofi_chill"
+     pexels_api_key: Optional[str] = None
++    pixabay_api_key: Optional[str] = None
+     custom_clips: Optional[Dict[str, str]] = None
+     scene_providers: Optional[Dict[str, str]] = None
+     subtitle_style: str = "hormozi_gold"
+@@ -146,6 +151,7 @@
+ 
+ class SettingsRequest(BaseModel):
+     pexels_api_key: Optional[str] = None
++    pixabay_api_key: Optional[str] = None
+     gemini_api_key: Optional[str] = None
+ 
+ 
+@@ -281,57 +287,55 @@
+ def get_settings():
+     from . import config
+     return {
+-        "has_pexels_key": bool(config.PEXELS_API_KEY or os.getenv("PEXELS_API_KEY")),
+-        "has_gemini_key": bool(config.GEMINI_API_KEY or os.getenv("GEMINI_API_KEY"))
++        "has_pexels_key": bool(pexels_key()),
++        "has_pixabay_key": bool(pixabay_key()),
++        "has_gemini_key": bool(os.getenv("GEMINI_API_KEY", config.GEMINI_API_KEY)),
++        "automatic_source_order": ["pexels", "pixabay", "curated"],
++        "build": "ShortsGenius_Repaired + Pixabay 1.1"
+     }
+ 
+ 
+ @app.post("/api/settings")
+ def update_settings(req: SettingsRequest):
+     from . import config
+-    env_file = PROJECT_ROOT / ".env"
+-    env_lines = []
+-    if env_file.exists():
+-        with open(env_file, "r", encoding="utf-8") as f:
+-            env_lines = f.readlines()
+-
+-    keys_to_update = {}
+-    if req.pexels_api_key is not None:
+-        key_val = req.pexels_api_key.strip()
+-        config.PEXELS_API_KEY = key_val
+-        os.environ["PEXELS_API_KEY"] = key_val
+-        keys_to_update["PEXELS_API_KEY"] = key_val
+-    if req.gemini_api_key is not None:
+-        key_val = req.gemini_api_key.strip()
+-        config.GEMINI_API_KEY = key_val
+-        os.environ["GEMINI_API_KEY"] = key_val
+-        keys_to_update["GEMINI_API_KEY"] = key_val
+-
+-    # Update or append in .env
+-    existing_keys = set()
+-    new_lines = []
+-    for line in env_lines:
+-        line_clean = line.strip()
+-        if "=" in line_clean and not line_clean.startswith("#"):
+-            k = line_clean.split("=", 1)[0].strip()
+-            if k in keys_to_update:
+-                new_lines.append(f"{k}={keys_to_update[k]}\n")
+-                existing_keys.add(k)
+-                continue
+-        new_lines.append(line)
+-    for k, v in keys_to_update.items():
+-        if k not in existing_keys:
+-            new_lines.append(f"{k}={v}\n")
+-
+-    with open(env_file, "w", encoding="utf-8") as f:
+-        f.writelines(new_lines)
+-
+-    return {"status": "ok", "message": "Settings saved successfully!"}
+- 
++    updates = {}
++    try:
++        for field, variable in (("pexels_api_key", "PEXELS_API_KEY"),
++                                ("pixabay_api_key", "PIXABAY_API_KEY"),
++                                ("gemini_api_key", "GEMINI_API_KEY")):
++            value = getattr(req, field)
++            if value is not None:
++                updates[variable] = validate_key(value)
++        update_env_keys(PROJECT_ROOT / ".env", updates)
++    except (ValueError, UnicodeError) as exc:
++        raise HTTPException(status_code=400, detail="Invalid API-key settings or .env encoding. Use single-line keys and UTF-8.") from None
++    except OSError:
++        raise HTTPException(status_code=500, detail="Cannot save .env. Check folder permissions and free disk space.") from None
++    # Only change the running process after the file has been saved successfully.
++    for variable, value in updates.items():
++        setattr(config, variable, value)
++        os.environ[variable] = value
++    return {"status": "ok", "message": "API keys saved. Existing FFmpeg and other settings were preserved."}
++
++
++@app.post("/api/test-pixabay-key")
++def api_test_pixabay_key(req: SettingsRequest):
++    try:
++        key = validate_key(req.pixabay_api_key) if req.pixabay_api_key is not None else pixabay_key()
++        client = PixabayClient(key, OUTPUT_DIR / "stock_cache" / "pixabay")
++        data, cached = client.search("technology", per_page=3)
++        suffix = " (24-hour cached check)" if cached else ""
++        return {"valid": True, "cached": cached,
++                "message": f"Pixabay Video API accepted this key{suffix}. Save Configuration to use a newly entered key."}
++    except (MediaError, ValueError) as exc:
++        return {"valid": False, "message": str(exc)}
++    except OSError:
++        return {"valid": False, "message": "Cannot use the Pixabay cache. Check output-folder permissions."}
++
+ 
+ @app.post("/api/test-pexels-key")
+ def api_test_pexels_key(req: Dict[str, Any]):
+-    api_key = req.get("pexels_api_key", "").strip()
++    api_key = str(req.get("pexels_api_key") or pexels_key()).strip()
+     if not api_key:
+         raise HTTPException(status_code=400, detail="Pexels API key cannot be empty.")
+ 
+@@ -404,6 +408,7 @@
+         voice_id=req.voice_id,
+         music_track=req.music_track,
+         pexels_api_key=req.pexels_api_key,
++        pixabay_api_key=req.pixabay_api_key,
+         custom_clips=req.custom_clips,
+         scene_providers=req.scene_providers,
+         subtitle_style=req.subtitle_style,
+@@ -524,6 +529,7 @@
+     scene_providers: Optional[Dict[str, str]] = None,
+     subtitle_style: str = "hormozi_gold", subtitle_position: str = "bottom_safe",
+     subtitle_format: str = "roman", allow_photo_motion: bool = False,
++    pixabay_api_key: Optional[str] = None,
+ ):
+     async with RENDER_LOCK:
+         try:
+@@ -535,7 +541,8 @@
+             visual_paths = await asyncio.to_thread(
+                 generate_scene_visuals, scenes=scenes, project_id=job_id,
+                 pexels_api_key=pexels_api_key, custom_clips=custom_clips,
+-                scene_providers=scene_providers, allow_photo_motion=allow_photo_motion)
++                scene_providers=scene_providers, allow_photo_motion=allow_photo_motion,
++                pixabay_api_key=pixabay_api_key)
+             report = OUTPUT_DIR / "jobs" / job_id / "visual_report.json"
+             JOBS[job_id]["visual_report"] = json.loads(report.read_text(encoding="utf-8"))
+             JOBS[job_id].update(status="VOICE_GENERATION", progress=45,
+@@ -559,6 +566,12 @@
+             JOBS[job_id].update(status="FAILED", error=str(exc), message=f"Pipeline error: {exc}", video_url=None)
+             folder = OUTPUT_DIR / "jobs" / job_id
+             folder.mkdir(parents=True, exist_ok=True)
++            report = folder / "visual_report.json"
++            if report.is_file():
++                try:
++                    JOBS[job_id]["visual_report"] = json.loads(report.read_text(encoding="utf-8"))
++                except (ValueError, OSError):
++                    pass
+             (folder / "pipeline_error.log").write_text(traceback.format_exc(), encoding="utf-8")
+             _save_job(job_id)
+ 
+--- a/backend/config.py
++++ b/backend/config.py
+@@ -82,4 +82,5 @@
+ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+ PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
++PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "")
+ UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY", "")
+--- /dev/null
++++ b/backend/services/pixabay_stock.py
+@@ -0,0 +1,234 @@
++"""Pixabay stock footage for user-requested reels, not a video-generation model.
++
++Official contract: https://pixabay.com/api/docs/#api_search_videos
++Successful searches (including zero results) are cached for 24 hours. Queries
++stay on the server; API keys are never put in diagnostics or cache documents.
++"""
++from __future__ import annotations
++
++import hashlib
++import json
++import math
++import os
++import threading
++import time
++import uuid
++from pathlib import Path
++from urllib.parse import urljoin, urlsplit
++
++import requests
++
++from .media_tools import MediaError, probe_media
++
++API_URL = "https://pixabay.com/api/videos/"
++CACHE_SECONDS = 24 * 60 * 60
++MIN_REQUEST_INTERVAL = 0.7  # below the documented 100 requests/minute, per process
++MAX_MEDIA_BYTES = 250 * 1024 * 1024
++MAX_DOWNLOAD_SECONDS = 120
++_REQUEST_LOCK = threading.RLock()
++_LAST_REQUEST: dict[str, float] = {}
++_COOLDOWN: dict[str, float] = {}
++
++
++def _number(value, default=0.0):
++    try:
++        result = float(value)
++        return result if math.isfinite(result) and result >= 0 else default
++    except (TypeError, ValueError):
++        return default
++
++
++def _trusted_url(value: str, *, media: bool = False) -> bool:
++    try:
++        parts = urlsplit(value)
++        hosts = {"cdn.pixabay.com"} if media else {"pixabay.com", "www.pixabay.com"}
++        return (parts.scheme == "https" and parts.hostname in hosts
++                and parts.port in (None, 443) and not parts.username and not parts.password)
++    except (ValueError, TypeError):
++        return False
++
++
++def _write_json(path: Path, data: dict):
++    path.parent.mkdir(parents=True, exist_ok=True)
++    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
++    try:
++        temporary.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
++        temporary.replace(path)
++    finally:
++        temporary.unlink(missing_ok=True)
++
++
++class PixabayClient:
++    def __init__(self, key: str, cache_dir: Path):
++        self.key = (key or "").strip()
++        self.cache_dir = Path(cache_dir)
++        # This digest is used internally only, never a reversible key prefix.
++        self._auth_id = hashlib.sha256(self.key.encode()).hexdigest()
++
++    def search(self, query: str, *, per_page: int = 20) -> tuple[dict, bool]:
++        """Return (API data, cache_hit). No unbounded paging or automated crawling."""
++        if not self.key:
++            raise MediaError("Pixabay API key is missing. Open API Keys & Sources to add it.")
++        query = " ".join(str(query or "").split())
++        if not query:
++            raise MediaError("This scene needs an English stock-footage search keyword.")
++        if len(query) > 100:
++            raise MediaError("Pixabay search keywords must be 100 characters or fewer.")
++        if not 3 <= per_page <= 20:
++            raise MediaError("Pixabay request size must be between 3 and 20 results.")
++        params = {"q": query, "per_page": per_page, "safesearch": "true", "lang": "en"}
++        cache_id = hashlib.sha256((self._auth_id + json.dumps(params, sort_keys=True)).encode()).hexdigest()
++        cache = self.cache_dir / f"{cache_id}.json"
++        # Serializing search requests also stops simultaneous identical queries.
++        with _REQUEST_LOCK:
++            try:
++                saved = json.loads(cache.read_text(encoding="utf-8"))
++                age = time.time() - float(saved["saved_at"])
++                if 0 <= age < CACHE_SECONDS and isinstance(saved["data"].get("hits"), list):
++                    return saved["data"], True
++            except (OSError, ValueError, TypeError, KeyError, AttributeError):
++                pass
++            now = time.monotonic()
++            cooldown = _COOLDOWN.get(self._auth_id, 0) - now
++            if cooldown > 0:
++                raise MediaError(f"Pixabay rate limit reached. Wait about {math.ceil(cooldown)} seconds or upload a clip.")
++            delay = MIN_REQUEST_INTERVAL - (now - _LAST_REQUEST.get(self._auth_id, 0))
++            if delay > 0:
++                time.sleep(delay)
++            try:
++                _LAST_REQUEST[self._auth_id] = time.monotonic()
++                with requests.get(API_URL, params={"key": self.key, **params},
++                                  headers={"User-Agent": "ShortsGenius/Pixabay-Update"},
++                                  timeout=(5, 25), allow_redirects=False) as response:
++                    status = response.status_code
++                    if status == 429:
++                        headers = response.headers
++                        wait = max(1.0, _number(headers.get("Retry-After"),
++                                   _number(headers.get("X-RateLimit-Reset"), 60.0)))
++                        _COOLDOWN[self._auth_id] = time.monotonic() + wait
++                        raise MediaError(f"Pixabay rate limit reached. Wait about {math.ceil(wait)} seconds or upload a clip.")
++                    if status in (400, 401, 403):
++                        raise MediaError(f"Pixabay rejected the key or request (HTTP {status}). Check your Pixabay key and account access.")
++                    if status != 200:
++                        raise MediaError(f"Pixabay search returned HTTP {status}. Retry later or upload footage.")
++                    data = response.json()
++                    if not isinstance(data, dict) or not isinstance(data.get("hits"), list):
++                        raise MediaError("Pixabay returned an unexpected response; no footage was selected.")
++                    # Only retain fields needed for the integration. Never retain request URLs.
++                    data = {"totalHits": int(_number(data.get("totalHits"))),
++                            "hits": [h for h in data["hits"][:per_page] if isinstance(h, dict)]}
++                    if str(response.headers.get("X-RateLimit-Remaining", "")) == "0":
++                        _COOLDOWN[self._auth_id] = time.monotonic() + max(
++                            1, _number(response.headers.get("X-RateLimit-Reset"), 60))
++            except requests.Timeout:
++                raise MediaError("Pixabay search timed out. Check your connection or upload footage.") from None
++            except requests.RequestException:
++                # requests exceptions may embed the URL, including the API key.
++                raise MediaError("Cannot connect to Pixabay. Check your internet connection or upload footage.") from None
++            except ValueError:
++                raise MediaError("Pixabay returned invalid JSON; retry later or upload footage.") from None
++            try:
++                _write_json(cache, {"saved_at": time.time(), "data": data})
++            except OSError:
++                # Do not keep hitting the API when its mandatory cache cannot be stored.
++                raise MediaError("Cannot save the Pixabay search cache. Check free disk space and output-folder permissions.") from None
++            return data, False
++
++    def _download(self, url: str, target: Path) -> dict:
++        if not _trusted_url(url, media=True):
++            raise MediaError("Pixabay returned an unsupported video-download host.")
++        partial = target.with_name(target.name + "." + uuid.uuid4().hex + ".download")
++        target.parent.mkdir(parents=True, exist_ok=True)
++        deadline = time.monotonic() + MAX_DOWNLOAD_SECONDS
++        try:
++            # Check redirect destinations before requesting them; do not permit arbitrary URLs.
++            for _ in range(4):
++                with requests.get(url, stream=True, timeout=(5, 30), allow_redirects=False) as response:
++                    if response.status_code in (301, 302, 303, 307, 308):
++                        url = urljoin(url, response.headers.get("Location", ""))
++                        if not _trusted_url(url, media=True):
++                            raise MediaError("Pixabay video redirected to an unsupported host.")
++                        continue
++                    if response.status_code != 200:
++                        raise MediaError(f"Pixabay video download returned HTTP {response.status_code}.")
++                    if _number(response.headers.get("Content-Length")) > MAX_MEDIA_BYTES:
++                        raise MediaError("Pixabay video exceeds the 250 MB download limit.")
++                    size = 0
++                    with partial.open("wb") as output:
++                        for chunk in response.iter_content(128 * 1024):
++                            if time.monotonic() > deadline:
++                                raise MediaError("Pixabay video download exceeded its time limit.")
++                            if not chunk:
++                                continue
++                            size += len(chunk)
++                            if size > MAX_MEDIA_BYTES:
++                                raise MediaError("Pixabay video exceeds the 250 MB download limit.")
++                            output.write(chunk)
++                    info = probe_media(partial, require_video=True, decode=True)
++                    if info["duration"] > 600:
++                        raise MediaError("Pixabay video exceeds the 10-minute input limit.")
++                    partial.replace(target)
++                    return info
++            raise MediaError("Too many Pixabay video-download redirects.")
++        except requests.Timeout:
++            raise MediaError("Pixabay video download timed out; retry later or upload a clip.") from None
++        except requests.RequestException:
++            raise MediaError("Pixabay video download failed; check your connection or upload a clip.") from None
++        finally:
++            partial.unlink(missing_ok=True)
++
++    def fetch_scene(self, scene: dict, output_path: Path, used: set) -> Path:
++        query = " ".join(str(scene.get("search_keyword", "")).split())
++        data, from_cache = self.search(query)
++        choices = []
++        for rank, hit in enumerate(data["hits"]):
++            video_id = hit.get("id")
++            if isinstance(video_id, bool) or not isinstance(video_id, int) or video_id < 1:
++                continue
++            if _number(hit.get("duration")) > 600:
++                continue
++            variants = []
++            renditions = hit.get("videos")
++            if not isinstance(renditions, dict):
++                continue
++            for variant in renditions.values():
++                if not isinstance(variant, dict):
++                    continue
++                width, height = _number(variant.get("width")), _number(variant.get("height"))
++                if width <= 0 or height <= 0 or not _trusted_url(variant.get("url", ""), media=True):
++                    continue
++                if _number(variant.get("size")) > MAX_MEDIA_BYTES:
++                    continue
++                # Select near-full-HD instead of blindly downloading 4K.
++                variants.append((abs(width * height - 1080 * 1920), variant))
++            if not variants:
++                continue
++            variant = min(variants, key=lambda v: v[0])[1]
++            width, height = _number(variant["width"]), _number(variant["height"])
++            score = (f"pixabay:{video_id}" in used, height < width, rank)
++            choices.append((score, hit, variant))
++        if not choices:
++            raise MediaError(f'No usable Pixabay video matched "{query}". Edit the English search keyword or upload a clip.')
++        errors = []
++        for _, hit, variant in sorted(choices, key=lambda row: row[0])[:3]:
++            target = Path(output_path)
++            token = f"pixabay:{hit['id']}"
++            try:
++                info = self._download(variant["url"], target)
++                source_url = str(hit.get("pageURL", ""))
++                if not _trusted_url(source_url):
++                    source_url = f"https://pixabay.com/videos/id-{hit['id']}/"
++                metadata = {
++                    "provider": "pixabay", "video_id": hit["id"], "source_url": source_url,
++                    "creator": {"name": str(hit.get("user", "")), "id": hit.get("user_id")},
++                    "query": query, "width": info["video"]["width"], "height": info["video"]["height"],
++                    "duration": info["duration"], "reused": token in used,
++                    "search_cached": from_cache, "license_url": "https://pixabay.com/service/license-summary/",
++                }
++                _write_json(target.with_suffix(".source.json"), metadata)
++                used.add(token)  # Only mark as used after a validated successful download.
++                return target
++            except (MediaError, OSError) as exc:
++                target.unlink(missing_ok=True)
++                errors.append(str(exc))
++        raise MediaError("No Pixabay candidate passed download/validation. " + " | ".join(errors))
+--- /dev/null
++++ b/backend/services/settings_store.py
+@@ -0,0 +1,61 @@
++"""Update only requested API keys, preserving existing FFmpeg and other settings."""
++from __future__ import annotations
++
++import os
++import re
++import threading
++import uuid
++from pathlib import Path
++
++_ALLOWED_KEYS = {"PIXABAY_API_KEY", "PEXELS_API_KEY", "GEMINI_API_KEY"}
++_LOCK = threading.Lock()
++
++
++def validate_key(value: str) -> str:
++    value = value.strip()
++    if len(value) > 512 or any(c.isspace() or c in "\x00#'\"\\" for c in value):
++        raise ValueError("API keys must be a single value without spaces, quotes or line breaks.")
++    return value
++
++
++def update_env_keys(path: Path, updates: dict[str, str]) -> None:
++    """Atomic update, no rewriting unrelated values or erasing unsubmitted keys."""
++    if not updates:
++        return
++    if not set(updates).issubset(_ALLOWED_KEYS):
++        raise ValueError("Only API key settings can be changed here.")
++    updates = {name: validate_key(value) for name, value in updates.items()}
++    path = Path(path)
++    with _LOCK:
++        original = path.read_bytes() if path.exists() else b""
++        bom = b"\xef\xbb\xbf" if original.startswith(b"\xef\xbb\xbf") else b""
++        text = original.decode("utf-8-sig")
++        newline = "\r\n" if "\r\n" in text else "\n"
++        lines, seen = [], set()
++        for line in text.splitlines(keepends=True):
++            match = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
++            name = match.group(1) if match else None
++            if name in updates:
++                if name not in seen:
++                    lines.append(f"{name}={updates[name]}{newline}")
++                    seen.add(name)
++                # Remove duplicate definitions of just the updated keys.
++            else:
++                lines.append(line)
++        content = "".join(lines)
++        for name, value in updates.items():
++            if name not in seen:
++                if content and not content.endswith(("\n", "\r")):
++                    content += newline
++                content += f"{name}={value}{newline}"
++        temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
++        try:
++            # Restrictive permissions on Unix. Windows inherits the folder ACL.
++            fd = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
++            with os.fdopen(fd, "wb") as handle:
++                handle.write(bom + content.encode("utf-8"))
++            if path.exists() and os.name != "nt":
++                os.chmod(temporary, path.stat().st_mode & 0o777)
++            temporary.replace(path)
++        finally:
++            temporary.unlink(missing_ok=True)
+--- a/backend/services/video_providers.py
++++ b/backend/services/video_providers.py
+@@ -21,6 +21,12 @@
+     context = context or {}
+     return (context.get("pexels_api_key") or
+             os.environ.get("PEXELS_API_KEY", config.PEXELS_API_KEY) or "").strip()
++
++
++def pixabay_key(context: Optional[dict] = None) -> str:
++    context = context or {}
++    return (context.get("pixabay_api_key") or
++            os.environ.get("PIXABAY_API_KEY", config.PIXABAY_API_KEY) or "").strip()
+ 
+ 
+ def library_manifest() -> dict:
+@@ -156,6 +162,24 @@
+         raise MediaError(last_error)
+ 
+ 
++class PixabayVideoProvider(BaseVideoProvider):
++    """Additional stock provider; all existing upload/compositor paths are retained."""
++    def __init__(self):
++        super().__init__("pixabay", "Pixabay stock video")
++
++    def is_available(self, context=None):
++        return bool(pixabay_key(context))
++
++    def generate_clip(self, scene, output_path, context=None):
++        from .pixabay_stock import PixabayClient
++        context = context or {}
++        used = context.get("used_clips")
++        if used is None:
++            used = set()
++        client = PixabayClient(pixabay_key(context), OUTPUT_DIR / "stock_cache" / "pixabay")
++        return client.fetch_scene(scene, Path(output_path), used)
++
++
+ class CuratedStockProvider(BaseVideoProvider):
+     def __init__(self):
+         super().__init__("curated", "Matched local library")
+@@ -229,7 +253,7 @@
+ class VideoProviderRouter:
+     def __init__(self):
+         self.providers = {provider.provider_id: provider for provider in (
+-            CustomUploadProvider(), PexelsVideoProvider(), CuratedStockProvider(),
++            CustomUploadProvider(), PexelsVideoProvider(), PixabayVideoProvider(), CuratedStockProvider(),
+             GenerativeAIVideoProvider(), ProceduralMotionProvider(),
+         )}
+ 
+@@ -240,10 +264,11 @@
+ 
+     def resolve_scene_clip(self, scene, output_path, scene_index, preferred_provider=None,
+                            custom_clips=None, pexels_api_key=None, used_clips=None,
+-                           allow_photo_motion=False, trace=None):
++                           allow_photo_motion=False, trace=None, pixabay_api_key=None):
+         number = scene.get("scene_number", scene_index + 1)
+         context = {"scene_key": f"scene_{number}", "custom_clips": custom_clips or {},
+-                   "pexels_api_key": pexels_api_key, "allow_photo_motion": allow_photo_motion,
++                   "pexels_api_key": pexels_api_key, "pixabay_api_key": pixabay_api_key,
++                   "allow_photo_motion": allow_photo_motion,
+                    "used_clips": used_clips if used_clips is not None else set()}
+         trace = trace if trace is not None else []
+ 
+@@ -265,7 +290,7 @@
+         preferred = (preferred_provider or "auto").strip().lower()
+         if preferred not in {"auto", *self.providers.keys()}:
+             raise MediaError(f"Unknown video provider: {preferred}")
+-        order = ["pexels", "curated"] if preferred == "auto" else [preferred]
++        order = ["pexels", "pixabay", "curated"] if preferred == "auto" else [preferred]
+         failures = []
+         for key in order:
+             provider = self.providers[key]
+@@ -273,8 +298,20 @@
+                 if not provider.is_available(context):
+                     raise MediaError(f"{provider.name} is not configured or has no assets.")
+                 clip = validate(provider.generate_clip(scene, output_path, context))
+-                trace.append({"scene_number": number, "provider": key, "status": "selected",
+-                              "file": clip.name, "kind": source_kind(clip)})
++                selected = {"scene_number": number, "provider": key, "status": "selected",
++                            "file": clip.name, "kind": source_kind(clip)}
++                if key in {"pexels", "pixabay"}:
++                    selected["kind"] = "stock_video"
++                    metadata = clip.with_suffix(".source.json")
++                    if metadata.is_file():
++                        try:
++                            source = json.loads(metadata.read_text(encoding="utf-8"))
++                            for field in ("source_url", "creator", "video_id", "width", "height", "reused", "query"):
++                                if field in source:
++                                    selected[field] = source[field]
++                        except (ValueError, OSError):
++                            pass
++                trace.append(selected)
+                 return clip, provider.name
+             except (MediaError, requests.RequestException, OSError, ValueError) as exc:
+                 failures.append(str(exc))
+--- a/backend/services/visual_engine.py
++++ b/backend/services/visual_engine.py
+@@ -10,7 +10,8 @@
+                            pexels_api_key: Optional[str] = None,
+                            custom_clips: Optional[dict[str, str]] = None,
+                            scene_providers: Optional[dict[str, str]] = None,
+-                           allow_photo_motion: bool = False) -> list[str]:
++                           allow_photo_motion: bool = False,
++                           pixabay_api_key: Optional[str] = None) -> list[str]:
+     validate_job_id(project_id)
+     paths, trace, used = [], [], set()
+     work = OUTPUT_DIR / "jobs" / project_id
+@@ -22,7 +23,7 @@
+                 scene, work / f"broll_{index + 1:03d}.mp4", index,
+                 preferred_provider=(scene_providers or {}).get(key) or scene.get("provider"),
+                 custom_clips=custom_clips, pexels_api_key=pexels_api_key, used_clips=used,
+-                allow_photo_motion=allow_photo_motion, trace=trace,
++                allow_photo_motion=allow_photo_motion, trace=trace, pixabay_api_key=pixabay_api_key,
+             )
+             paths.append(str(path))
+     finally:
+--- a/frontend/index.html
++++ b/frontend/index.html
+@@ -755,6 +755,8 @@
+     }
+ 
+     .modal-dialog {
++      max-height: 88vh;
++      overflow-y: auto;
+       background: var(--bg-surface);
+       border: 1px solid var(--border-color);
+       border-radius: 16px;
+@@ -856,7 +858,7 @@
+     </a>
+     <div class="header-actions">
+       <div class="specs-pill">📐 1080×1920 (9:16) • 🔀 Multi-Model Router</div>
+-      <div class="specs-pill" id="pexels-status-pill" style="cursor: pointer;" onclick="openSettingsModal()" title="Click to configure Pexels API Key">🌐 Pexels: Checking...</div>
++      <div class="specs-pill" id="stock-status-pill" style="cursor:pointer;" onclick="openSettingsModal()" title="Configure Pixabay or Pexels stock-video keys">Stock sources: checking...</div>
+       <button class="settings-btn" onclick="openSettingsModal()">
+         <span>⚙️ API Keys & Sources</span>
+       </button>
+@@ -997,6 +999,7 @@
+         Allow photo-animation demos (not real footage). Off by default.
+       </label>
+       <pre id="render-diagnostics" style="white-space:pre-wrap; font-size:0.8rem; max-height:200px; overflow:auto;"></pre>
++      <div id="scene-source-report" aria-live="polite" style="font-size:0.76rem;max-height:240px;overflow:auto;margin-bottom:12px;"></div>
+       <button class="btn btn-render" id="btn-render-video" onclick="handleRenderVideo()" style="display: none;">
+         <span>🚀 Render 1080x1920 Instagram Reel</span>
+       </button>
+@@ -1094,6 +1097,19 @@
+         <button class="close-btn" onclick="closeSettingsModal()">&times;</button>
+       </div>
+ 
++      <p style="font-size:0.78rem;color:var(--text-muted);margin-bottom:12px;">
++        Leave fields blank to keep saved keys. Saving here does not change your FFmpeg paths.
++      </p>
++      <div class="form-group">
++        <label class="form-label" for="pixabay-key-input">Pixabay API Key (additional stock videos)</label>
++        <div style="display:flex;gap:0.5rem;">
++          <input type="password" class="text-input" id="pixabay-key-input" autocomplete="off" placeholder="Paste your Pixabay API key">
++          <button class="btn btn-secondary" style="white-space:nowrap;padding:0.4rem 0.85rem;" type="button" onclick="testPixabayKeyConnection()">Test Key</button>
++        </div>
++        <p id="pixabay-key-status" style="font-size:0.74rem;color:var(--text-sub);margin-top:0.35rem;">Test a pasted key or your saved key, then save new keys.</p>
++        <a href="https://pixabay.com/api/docs/" target="_blank" rel="noopener noreferrer" style="font-size:0.74rem;color:var(--primary);">Open Pixabay API documentation / your key</a>
++      </div>
++
+       <div class="form-group">
+         <label class="form-label">Pexels Free API Key (Real 4K/1080p Stock Videos)</label>
+         <div style="display: flex; gap: 0.5rem;">
+@@ -1101,7 +1117,7 @@
+           <button class="btn btn-secondary" style="white-space: nowrap; padding: 0.4rem 0.85rem;" type="button" onclick="testPexelsKeyConnection()">🔍 Test Key</button>
+         </div>
+         <p id="pexels-key-status" style="font-size: 0.74rem; color: var(--text-sub); margin-top: 0.35rem;">
+-          Enables live 1080x1920 video search on any topic. 
++          Searches stock video matching scene keywords; available footage varies. 
+           <a href="https://www.pexels.com/api/" target="_blank" style="color: var(--primary); text-decoration: underline;">Pexels API access status &rarr;</a>
+         </p>
+       </div>
+@@ -1152,7 +1168,8 @@
+ 
+   <footer style="padding:16px;text-align:center;font-size:12px;color:#a0a0b0;">
+     Automatic stock footage, when selected, is provided by
+-    <a href="https://www.pexels.com" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;">Pexels</a>.
++    <a href="https://www.pexels.com" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;">Pexels</a> or
++    <a href="https://pixabay.com" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;">Pixabay</a>.
+     Review each clip and its saved source information before publishing.
+   </footer>
+   <script>
+@@ -1160,7 +1177,7 @@
+     let customClips = {}; // scene key -> server-issued media identifier
+     let customClipPreviews = {};
+     let pendingUploads = 0;
+-    let sceneProviders = {}; // scene_1 -> 'auto' | 'curated' | 'pexels' | 'ai_video' | 'procedural' | 'upload'
++    let sceneProviders = {}; // scene_1 -> 'auto' | 'curated' | 'pexels' | 'pixabay' | 'ai_video' | 'procedural' | 'upload'
+     let pollInterval = null;
+     let targetUploadScene = 1;
+ 
+@@ -1209,6 +1226,7 @@
+ 
+         if (!res.ok) throw new Error(await res.text());
+         currentStoryboard = await res.json();
++        renderSourceReport([]);
+         customClips = {}; // reset custom overrides
+         customClipPreviews = {};
+         sceneProviders = {}; // reset model overrides
+@@ -1244,6 +1262,7 @@
+           <button class="mini-btn" type="button" onclick="applyProviderToAll('curated')">🎬 Curated Stock (1080p)</button>
+           <button class="mini-btn" type="button" disabled title="No video-generation API is connected">AI Video: not connected</button>
+           <button class="mini-btn" type="button" onclick="applyProviderToAll('pexels')">🌐 Pexels Video API</button>
++          <button class="mini-btn" type="button" onclick="applyProviderToAll('pixabay')">Pixabay Stock Video</button>
+           <button class="mini-btn" type="button" onclick="applyProviderToAll('auto')">⚡ Auto Router</button>
+         </div>
+       `;
+@@ -1261,9 +1280,10 @@
+             <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+               <span class="scene-tag">${catBadge}</span>
+               <select class="scene-provider-select" id="provider-select-${sceneNum}" onchange="updateSceneProvider(${sceneNum}, this.value)" title="Select Video Provider Model">
+-                <option value="auto" ${currentProvider === 'auto' ? 'selected' : ''}>⚡ Auto: Pexels then matching local footage</option>
++                <option value="auto" ${currentProvider === 'auto' ? 'selected' : ''}>⚡ Auto: Pexels, Pixabay, then matching local footage</option>
+                 <option value="curated" ${currentProvider === 'curated' ? 'selected' : ''}>🎬 Matched Local Library</option>
+                 <option value="pexels" ${currentProvider === 'pexels' ? 'selected' : ''}>🌐 Pexels Stock Video (existing API key required)</option>
++                <option value="pixabay" ${currentProvider === 'pixabay' ? 'selected' : ''}>Pixabay Stock Video (API key required)</option>
+                 <option value="ai_video" disabled>AI video API - not connected (upload generated MP4)</option>
+                 ${hasCustom ? `<option value="upload" ${currentProvider === 'upload' ? 'selected' : ''}>📁 User Upload Clip</option>` : ''}
+               </select>
+@@ -1295,6 +1315,12 @@
+                 <button class="mini-btn" onclick="openLibraryModal(${sceneNum})">🎬 Choose Stock</button>
+               </div>
+             </div>
++            <label style="display:block;font-size:0.73rem;margin:8px 0;color:var(--text-muted);">
++              Footage search (English keywords, max 100 characters)
++              <input class="text-input" type="text" maxlength="100" value="${escapeHtml(scene.search_keyword || '')}"
++                oninput="updateSceneKeyword(${idx}, this.value)" placeholder="Example: laptop coding"
++                aria-label="Footage search keywords for scene ${sceneNum}">
++            </label>
+             ${customClipPreviews[sceneKey] ? `<video src="${escapeHtml(customClipPreviews[sceneKey])}" controls muted playsinline preload="metadata" style="width:120px;max-height:220px;margin:10px 0;"></video>` : ''}
+             <div style="font-size: 0.73rem; color: #94A3B8; font-style: italic;">
+               <strong>Model Prompt (EN):</strong> ${escapeHtml(scene.visual_prompt)}
+@@ -1314,6 +1340,9 @@
+         delete customClipPreviews[key];
+       }
+       renderStoryboardUI(currentStoryboard);
++      if (provider === 'pixabay' && !hasPixabayKey) {
++        showToast('Add your Pixabay API key in API Keys & Sources, or upload a clip.', 'warning');
++      }
+       if (provider === 'pexels' && !hasPexelsKey) {
+         showToast('Pexels requires an existing API key. Upload footage as an alternative.', 'warning');
+       }
+@@ -1376,6 +1405,12 @@
+       }).catch(err => {
+         showToast('Clipboard copy error: ' + err, 'error');
+       });
++    }
++
++    function updateSceneKeyword(idx, value) {
++      if (currentStoryboard && currentStoryboard.scenes[idx]) {
++        currentStoryboard.scenes[idx].search_keyword = value;
++      }
+     }
+ 
+     function updateSceneNarration(idx, text) {
+@@ -1613,8 +1648,9 @@
+       document.getElementById('library-modal').classList.remove('open');
+     }
+ 
+-    /* Settings Modal */
++    /* Settings Modal: keys are sent only to this local backend, never returned. */
+     let hasPexelsKey = false;
++    let hasPixabayKey = false;
+     let hasGeminiKey = false;
+ 
+     async function checkApiSettings() {
+@@ -1623,83 +1659,107 @@
+         if (!res.ok) return;
+         const data = await res.json();
+         hasPexelsKey = !!data.has_pexels_key;
++        hasPixabayKey = !!data.has_pixabay_key;
+         hasGeminiKey = !!data.has_gemini_key;
+-        updatePexelsBadge();
+-      } catch (e) {
+-        console.error('Settings check error:', e);
+-      }
+-    }
+-
+-    function updatePexelsBadge() {
+-      const pill = document.getElementById('pexels-status-pill');
++        updateSourceBadge();
++      } catch (err) {
++        console.error('Settings check failed.');
++      }
++    }
++
++    function updateSourceBadge() {
++      const pill = document.getElementById('stock-status-pill');
+       if (!pill) return;
+-      if (hasPexelsKey) {
+-        pill.innerHTML = '🟢 Pexels Video: Active';
+-        pill.style.color = '#10B981';
+-        pill.style.borderColor = 'rgba(16, 185, 129, 0.4)';
+-      } else {
+-        pill.innerHTML = '⚪ Pexels: Key Unset (Curated & AI Active)';
+-        pill.style.color = '#94A3B8';
+-        pill.style.borderColor = 'rgba(148, 163, 184, 0.2)';
+-      }
+-    }
+-
+-    async function testPexelsKeyConnection() {
+-      const key = document.getElementById('pexels-key-input').value.trim();
+-      const statusEl = document.getElementById('pexels-key-status');
+-      if (!key) {
+-        statusEl.innerHTML = '<span style="color:#EF4444;">Please paste your Pexels API key first.</span>';
++      pill.textContent = `Pixabay: ${hasPixabayKey ? 'key set' : 'not set'} | Pexels: ${hasPexelsKey ? 'key set' : 'not set'}`;
++      pill.title = 'Key presence is not a connectivity check. Click to configure or test your keys.';
++      pill.style.color = hasPixabayKey || hasPexelsKey ? '#10B981' : '#94A3B8';
++      document.getElementById('pixabay-key-input').placeholder = hasPixabayKey ? 'Key saved - leave blank to keep it' : 'Paste your Pixabay API key';
++      document.getElementById('pexels-key-input').placeholder = hasPexelsKey ? 'Key saved - leave blank to keep it' : 'Paste an existing Pexels API key';
++      document.getElementById('gemini-key-input').placeholder = hasGeminiKey ? 'Key saved - leave blank to keep it' : 'Paste Gemini key for custom AI storyboards';
++    }
++
++    async function testStockKey(provider) {
++      const key = document.getElementById(`${provider}-key-input`).value.trim();
++      const status = document.getElementById(`${provider}-key-status`);
++      const configured = provider === 'pixabay' ? hasPixabayKey : hasPexelsKey;
++      if (!key && !configured) {
++        status.textContent = `Paste your ${provider} API key first.`;
+         return;
+       }
+-      statusEl.innerHTML = '<span style="color:#F59E0B;">⏳ Testing connection to Pexels Video Search...</span>';
++      status.textContent = `Testing ${provider} Video API...`;
+       try {
+-        const res = await fetch('/api/test-pexels-key', {
+-          method: 'POST',
+-          headers: {'Content-Type': 'application/json'},
+-          body: JSON.stringify({ pexels_api_key: key })
++        const payload = key ? {[`${provider}_api_key`]: key} : {};
++        const res = await fetch(`/api/test-${provider}-key`, {
++          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+         });
+         const data = await res.json();
+-        if (data.valid) {
+-          statusEl.innerHTML = `<span style="color:#10B981;">✅ ${data.message}</span>`;
+-          hasPexelsKey = true;
+-          updatePexelsBadge();
+-          showToast('✅ Pexels API Key Verified Successfully!', 'success');
+-        } else {
+-          statusEl.innerHTML = `<span style="color:#EF4444;">❌ ${data.message}</span>`;
+-          showToast('❌ Pexels key test failed: ' + data.message, 'error');
+-        }
++        if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Key test failed.');
++        status.textContent = data.message;
++        // Testing a typed key does not configure the running app; saving does.
++        showToast(data.valid ? 'Key accepted. Save Configuration for new keys.' : data.message, data.valid ? 'success' : 'warning');
+       } catch (err) {
+-        statusEl.innerHTML = `<span style="color:#EF4444;">❌ Connection error: ${err.message}</span>`;
+-      }
+-    }
+-
+-    function openSettingsModal() {
+-      document.getElementById('settings-modal').classList.add('open');
+-    }
+-
+-    function closeSettingsModal() {
+-      document.getElementById('settings-modal').classList.remove('open');
+-    }
++        status.textContent = `Test failed: ${err.message}`;
++      }
++    }
++
++    function testPixabayKeyConnection() { return testStockKey('pixabay'); }
++    function testPexelsKeyConnection() { return testStockKey('pexels'); }
++    function openSettingsModal() { document.getElementById('settings-modal').classList.add('open'); }
++    function closeSettingsModal() { document.getElementById('settings-modal').classList.remove('open'); }
+ 
+     async function saveSettings() {
+-      const pexelsKey = document.getElementById('pexels-key-input').value.trim();
+-      const geminiKey = document.getElementById('gemini-key-input').value.trim();
+-
++      const payload = {};
++      for (const provider of ['pixabay', 'pexels', 'gemini']) {
++        const value = document.getElementById(`${provider}-key-input`).value.trim();
++        if (value) payload[`${provider}_api_key`] = value;
++      }
+       try {
+         const res = await fetch('/api/settings', {
+-          method: 'POST',
+-          headers: {'Content-Type': 'application/json'},
+-          body: JSON.stringify({
+-            pexels_api_key: pexelsKey || undefined,
+-            gemini_api_key: geminiKey || undefined
+-          })
++          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+         });
+-        if (!res.ok) throw new Error(await res.text());
++        const data = await res.json();
++        if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not save keys.');
++        for (const provider of ['pixabay', 'pexels', 'gemini']) {
++          document.getElementById(`${provider}-key-input`).value = '';
++        }
+         await checkApiSettings();
+-        showToast('✅ Configuration saved successfully!', 'success');
++        showToast('Configuration saved. Existing FFmpeg paths were preserved.', 'success');
+         closeSettingsModal();
+       } catch (err) {
+         showToast('Failed to save settings: ' + err.message, 'error');
++      }
++    }
++
++    function renderSourceReport(report) {
++      const box = document.getElementById('scene-source-report');
++      box.replaceChildren();
++      const selected = (report || []).filter(item => item.status === 'selected');
++      if (!selected.length) return;
++      const title = document.createElement('strong');
++      title.textContent = 'Footage used in this render';
++      box.appendChild(title);
++      for (const item of selected) {
++        const row = document.createElement('div');
++        row.style.cssText = 'padding:8px 0;border-bottom:1px solid var(--border-color);overflow-wrap:anywhere;';
++        const creator = item.creator && item.creator.name ? ` by ${item.creator.name}` : '';
++        const repeated = item.reused ? ' (reused: no unused candidate selected)' : '';
++        row.textContent = `Scene ${item.scene_number}: ${item.provider}${creator}${repeated}`;
++        if (item.source_url) {
++          try {
++            const source = new URL(item.source_url);
++            const host = source.hostname;
++            if (source.protocol === 'https:' && ['pixabay.com', 'www.pixabay.com', 'pexels.com', 'www.pexels.com'].includes(host)) {
++              const link = document.createElement('a');
++              link.href = source.href;
++              link.target = '_blank';
++              link.rel = 'noopener noreferrer';
++              link.style.cssText = 'display:block;color:var(--primary);text-decoration:underline;';
++              link.textContent = `View original on ${item.provider}`;
++              row.appendChild(link);
++            }
++          } catch (err) { /* Do not render unsafe or malformed source links. */ }
++        }
++        box.appendChild(row);
+       }
+     }
+ 
+@@ -1724,6 +1784,7 @@
+       synthBtn.disabled = true;
+       renderBtn.innerHTML = '<span>Checking footage and rendering...</span>';
+       progressBox.style.display = 'block';
++      renderSourceReport([]);
+       updateProgress(10, 'Submitting generation request to compositor...');
+ 
+       try {
+@@ -1789,6 +1850,7 @@
+           const job = await res.json();
+ 
+           updateProgress(job.progress, job.message);
++          if (job.visual_report) renderSourceReport(job.visual_report);
+ 
+           if (job.status === 'COMPLETED') {
+             clearInterval(pollInterval);
+--- /dev/null
++++ b/tests/test_pixabay.py
+@@ -0,0 +1,436 @@
++"""Additional offline regressions. All provider HTTP and speech calls are mocked.
++FFmpeg, ffprobe, uploaded files, API routes and final MP4 validation run for real.
++"""
++from __future__ import annotations
++
++import asyncio
++import json
++import shutil
++import traceback
++from pathlib import Path
++from types import SimpleNamespace
++
++import pytest
++import requests
++from fastapi.testclient import TestClient
++
++from backend import app as api, config
++from backend.services import pixabay_stock as stock
++from backend.services import video_providers as providers
++from backend.services import visual_engine, voice_engine, video_compositor as compositor
++from backend.services.media_tools import MediaError, executable, run_checked, validate_final
++from backend.services.settings_store import update_env_keys
++
++
++@pytest.fixture(autouse=True)
++def clean_pixabay_state(monkeypatch, tmp_path):
++    monkeypatch.setenv('PIXABAY_API_KEY', '')
++    monkeypatch.setenv('PEXELS_API_KEY', '')
++    monkeypatch.setenv('GEMINI_API_KEY', '')
++    for name in ('PIXABAY_API_KEY', 'PEXELS_API_KEY', 'GEMINI_API_KEY'):
++        monkeypatch.setattr(config, name, '')
++    stock._LAST_REQUEST.clear()
++    stock._COOLDOWN.clear()
++    monkeypatch.setattr(stock, 'MIN_REQUEST_INTERVAL', 0)
++    out, videos, music = tmp_path / 'output', tmp_path / 'videos', tmp_path / 'music'
++    uploads = out / 'uploads'
++    for path in (out, videos, music, uploads):
++        path.mkdir(parents=True, exist_ok=True)
++    for module in (api, providers, compositor, visual_engine, voice_engine):
++        monkeypatch.setattr(module, 'OUTPUT_DIR', out, raising=False)
++    for module in (api, providers):
++        monkeypatch.setattr(module, 'UPLOADS_DIR', uploads)
++        monkeypatch.setattr(module, 'VIDEOS_DIR', videos)
++    monkeypatch.setattr(api, 'PROJECT_ROOT', tmp_path)
++    monkeypatch.setattr(compositor, 'MUSIC_DIR', music)
++    monkeypatch.setattr(api, 'RENDER_LOCK', asyncio.Semaphore(1))
++    api.JOBS.clear()
++    return SimpleNamespace(root=tmp_path, out=out, videos=videos, music=music, uploads=uploads)
++
++
++@pytest.fixture(scope='module')
++def media_files(tmp_path_factory):
++    root = tmp_path_factory.mktemp('pixabay_test_media')
++    ff = executable('ffmpeg')
++    run_checked([ff, '-nostdin', '-y', '-v', 'error', '-f', 'lavfi', '-i',
++                 'testsrc2=size=320x180:rate=24', '-t', '0.8', '-c:v', 'libx264',
++                 '-threads', '1', '-pix_fmt', 'yuv420p', str(root / 'clip.mp4')])
++    run_checked([ff, '-nostdin', '-y', '-v', 'error', '-f', 'lavfi', '-i',
++                 'sine=frequency=440:sample_rate=48000', '-t', '0.8', str(root / 'voice.wav')])
++    return root
++
++
++def scene(number=1):
++    return {'scene_number': number, 'search_keyword': 'laptop coding',
++            'visual_prompt': 'A developer working on a laptop',
++            'narration': '\u0c2e\u0c28\u0c02 \u0c15\u0c32\u0c3f\u0c38\u0c3f \u0c28\u0c47\u0c30\u0c4d\u0c1a\u0c41\u0c15\u0c41\u0c02\u0c26\u0c3e\u0c02',
++            'roman_subtitles': 'Manam kalisi nerchukundam', 'duration_estimate_sec': 0.8}
++
++
++def hit(number=101, width=1920, height=1080):
++    return {'id': number, 'pageURL': f'https://pixabay.com/videos/id-{number}/',
++            'user': 'Offline Test Creator', 'user_id': 200, 'duration': 5,
++            'videos': {'large': {'width': 3840, 'height': 2160, 'size': 10000,
++                                'url': f'https://cdn.pixabay.com/video/{number}-4k.mp4'},
++                       'medium': {'width': width, 'height': height, 'size': 1000,
++                                  'url': f'https://cdn.pixabay.com/video/{number}-hd.mp4'}}}
++
++
++class Response:
++    def __init__(self, payload=None, content=b'', status=200, headers=None):
++        self.payload = payload
++        self.content = content
++        self.status_code = status
++        self.headers = headers or {}
++    def __enter__(self):
++        return self
++    def __exit__(self, *args):
++        return False
++    def json(self):
++        return self.payload
++    def iter_content(self, size):
++        yield self.content
++
++
++def mock_http(monkeypatch, media_files, hits=None, status=200):
++    calls = []
++    hits = [hit()] if hits is None else hits
++    def get(url, **kwargs):
++        calls.append((url, kwargs))
++        if url == stock.API_URL:
++            return Response({'hits': hits, 'totalHits': len(hits)}, status=status)
++        return Response(content=(media_files / 'clip.mp4').read_bytes())
++    monkeypatch.setattr(stock.requests, 'get', get)
++    return calls
++
++
++def test_pixabay_missing_key_never_calls_network(monkeypatch, tmp_path):
++    monkeypatch.setattr(stock.requests, 'get', lambda *a, **kw: pytest.fail('Network must not be called'))
++    with pytest.raises(MediaError, match='key is missing'):
++        stock.PixabayClient('', tmp_path).search('coding')
++
++
++def test_key_resolution_runtime_and_request_override(monkeypatch):
++    assert not providers.PixabayVideoProvider().is_available()
++    monkeypatch.setenv('PIXABAY_API_KEY', 'runtime-test-key')
++    assert providers.PixabayVideoProvider().is_available()
++    assert providers.pixabay_key({'pixabay_api_key': 'request-test-key'}) == 'request-test-key'
++
++
++def test_pixabay_hd_download_and_creator_provenance(clean_pixabay_state, media_files, monkeypatch):
++    work = clean_pixabay_state
++    calls = mock_http(monkeypatch, media_files)
++    path = providers.PixabayVideoProvider().generate_clip(scene(), work.out / 'stock.mp4',
++                                                        {'pixabay_api_key': 'test-key'})
++    assert calls[0][0] == 'https://pixabay.com/api/videos/'
++    assert calls[0][1]['params']['safesearch'] == 'true'
++    assert 'orientation' not in calls[0][1]['params']  # Not a supported video API parameter.
++    assert calls[1][0].endswith('101-hd.mp4')
++    source = json.loads(path.with_suffix('.source.json').read_text())
++    assert source['provider'] == 'pixabay' and source['video_id'] == 101
++    assert source['creator']['name'] == 'Offline Test Creator'
++    assert source['width'] == 320 and 'test-key' not in path.with_suffix('.source.json').read_text()
++
++
++def test_portrait_result_preferred_among_query_hits(clean_pixabay_state, media_files, monkeypatch):
++    calls = mock_http(monkeypatch, media_files, [hit(101), hit(102, 1080, 1920)])
++    providers.PixabayVideoProvider().generate_clip(scene(), clean_pixabay_state.out / 'stock.mp4',
++                                                 {'pixabay_api_key': 'test-key'})
++    assert calls[1][0].endswith('102-hd.mp4')
++
++
++def test_distinct_assets_preferred_across_scenes(clean_pixabay_state, media_files, monkeypatch):
++    calls = mock_http(monkeypatch, media_files, [hit(101), hit(102)])
++    used = set()
++    for number in (1, 2):
++        providers.PixabayVideoProvider().generate_clip(scene(number), clean_pixabay_state.out / f'{number}.mp4',
++                                                     {'pixabay_api_key': 'test-key', 'used_clips': used})
++    assert used == {'pixabay:101', 'pixabay:102'}
++    assert sum(url == stock.API_URL for url, _ in calls) == 1
++    assert [url for url, _ in calls if url != stock.API_URL][-1].endswith('102-hd.mp4')
++
++
++def test_unavoidable_reuse_is_labelled(clean_pixabay_state, media_files, monkeypatch):
++    mock_http(monkeypatch, media_files)
++    path = providers.PixabayVideoProvider().generate_clip(scene(), clean_pixabay_state.out / 'stock.mp4',
++        {'pixabay_api_key': 'test-key', 'used_clips': {'pixabay:101'}})
++    assert json.loads(path.with_suffix('.source.json').read_text())['reused'] is True
++
++
++def test_cache_success_for_24h_without_key_plaintext(tmp_path, media_files, monkeypatch):
++    calls = mock_http(monkeypatch, media_files)
++    client = stock.PixabayClient('do-not-print-this-test-secret', tmp_path / 'cache')
++    first, cached = client.search('coding')
++    second, cached_again = client.search('coding')
++    assert not cached and cached_again and first == second and len(calls) == 1
++    cache = next((tmp_path / 'cache').glob('*.json'))
++    assert 'do-not-print-this-test-secret' not in cache.read_text() + cache.name
++    data = json.loads(cache.read_text())
++    data['saved_at'] -= stock.CACHE_SECONDS + 1
++    cache.write_text(json.dumps(data))
++    assert client.search('coding')[1] is False
++    assert len(calls) == 2
++
++
++def test_changed_key_does_not_reuse_old_auth_cache(tmp_path, media_files, monkeypatch):
++    calls = mock_http(monkeypatch, media_files)
++    for key in ('first-test-key', 'second-test-key'):
++        assert not stock.PixabayClient(key, tmp_path / 'cache').search('coding')[1]
++    assert len(calls) == 2
++
++
++def test_empty_results_are_cached_without_random_fallback(clean_pixabay_state, media_files, monkeypatch):
++    calls = mock_http(monkeypatch, media_files, [])
++    client = stock.PixabayClient('test-key', clean_pixabay_state.out / 'cache')
++    for _ in range(2):
++        with pytest.raises(MediaError, match='No usable Pixabay video matched'):
++            client.fetch_scene(scene(), clean_pixabay_state.out / 'empty.mp4', set())
++    assert len(calls) == 1
++    assert not (clean_pixabay_state.out / 'empty.mp4').exists()
++
++
++@pytest.mark.parametrize('status', [400, 401, 403, 429, 500])
++def test_http_errors_are_actionable_and_secret_free(tmp_path, media_files, monkeypatch, status):
++    mock_http(monkeypatch, media_files, status=status)
++    with pytest.raises(MediaError) as error:
++        stock.PixabayClient('secret-test-key', tmp_path / 'cache').search('coding')
++    assert 'secret-test-key' not in str(error.value)
++    assert 'rate limit' in str(error.value) if status == 429 else str(status) in str(error.value)
++
++
++def test_rate_limit_does_not_retry_on_every_scene(tmp_path, monkeypatch):
++    calls = []
++    def get(*args, **kwargs):
++        calls.append(args)
++        return Response(status=429, headers={'Retry-After': '60'})
++    monkeypatch.setattr(stock.requests, 'get', get)
++    client = stock.PixabayClient('test-key', tmp_path / 'cache')
++    for query in ('coding', 'robot'):
++        with pytest.raises(MediaError, match='rate limit'):
++            client.search(query)
++    assert len(calls) == 1
++
++
++def test_requests_error_does_not_leak_key_in_traceback(tmp_path, monkeypatch):
++    def bad_request(*a, **kw):
++        raise requests.ConnectionError('https://pixabay.com/api/videos/?key=PRIVATE-TEST-KEY')
++    monkeypatch.setattr(stock.requests, 'get', bad_request)
++    private_key = 'PRIVATE-TEST-KEY'
++    client = stock.PixabayClient(private_key, tmp_path / 'cache')
++    try:
++        client.search('coding')
++    except MediaError:
++        diagnostic = traceback.format_exc()
++    assert 'PRIVATE-TEST-KEY' not in diagnostic
++    assert 'Cannot connect to Pixabay' in diagnostic
++
++
++@pytest.mark.parametrize('payload', [[], {'hits': 'wrong'}, {'hits': None}])
++def test_invalid_api_json_is_not_accepted(tmp_path, monkeypatch, payload):
++    monkeypatch.setattr(stock.requests, 'get', lambda *a, **kw: Response(payload))
++    with pytest.raises(MediaError, match='unexpected response'):
++        stock.PixabayClient('test-key', tmp_path).search('coding')
++
++
++def test_malformed_renditions_are_skipped(clean_pixabay_state, media_files, monkeypatch):
++    bad = hit()
++    bad['videos'] = ['not-a-dictionary']
++    mock_http(monkeypatch, media_files, [bad])
++    with pytest.raises(MediaError, match='No usable Pixabay'):
++        providers.PixabayVideoProvider().generate_clip(scene(), clean_pixabay_state.out / 'a.mp4',
++                                                      {'pixabay_api_key': 'test-key'})
++
++
++def test_oversized_stream_removed(tmp_path, monkeypatch):
++    monkeypatch.setattr(stock, 'MAX_MEDIA_BYTES', 10)
++    monkeypatch.setattr(stock.requests, 'get', lambda *a, **kw: Response(content=b'x' * 20))
++    with pytest.raises(MediaError, match='250 MB'):
++        stock.PixabayClient('key', tmp_path)._download('https://cdn.pixabay.com/video/test.mp4', tmp_path / 'a.mp4')
++    assert not list(tmp_path.glob('*.download')) and not (tmp_path / 'a.mp4').exists()
++
++
++def test_corrupt_video_does_not_mark_candidate_used(clean_pixabay_state, monkeypatch):
++    def get(url, **kwargs):
++        return Response({'hits': [hit()], 'totalHits': 1}) if url == stock.API_URL else Response(content=b'not video' * 500)
++    monkeypatch.setattr(stock.requests, 'get', get)
++    used = set()
++    with pytest.raises(MediaError, match='No Pixabay candidate passed'):
++        providers.PixabayVideoProvider().generate_clip(scene(), clean_pixabay_state.out / 'a.mp4',
++                                                      {'pixabay_api_key': 'test-key', 'used_clips': used})
++    assert not used and not list(clean_pixabay_state.out.glob('*.download'))
++
++
++def test_redirect_cannot_access_localhost(tmp_path, monkeypatch):
++    calls = []
++    def get(url, **kwargs):
++        calls.append(url)
++        return Response(status=302, headers={'Location': 'http://127.0.0.1/private'})
++    monkeypatch.setattr(stock.requests, 'get', get)
++    with pytest.raises(MediaError, match='unsupported host'):
++        stock.PixabayClient('key', tmp_path)._download('https://cdn.pixabay.com/video/a.mp4', tmp_path / 'a.mp4')
++    assert len(calls) == 1
++
++
++def test_unsafe_media_url_never_downloaded(clean_pixabay_state, media_files, monkeypatch):
++    bad = hit()
++    for variant in bad['videos'].values():
++        variant['url'] = 'http://localhost/secret.mp4'
++    calls = mock_http(monkeypatch, media_files, [bad])
++    with pytest.raises(MediaError, match='No usable Pixabay'):
++        providers.PixabayVideoProvider().generate_clip(scene(), clean_pixabay_state.out / 'a.mp4',
++                                                      {'pixabay_api_key': 'test-key'})
++    assert len(calls) == 1
++
++
++def test_manual_upload_still_overrides_pixabay(clean_pixabay_state, media_files, monkeypatch):
++    target = clean_pixabay_state.uploads / 'mine.mp4'
++    shutil.copy2(media_files / 'clip.mp4', target)
++    monkeypatch.setattr(stock.requests, 'get', lambda *a, **kw: pytest.fail('Upload must not contact stock providers'))
++    path, name = providers.ROUTER.resolve_scene_clip(scene(), clean_pixabay_state.out / 'out.mp4', 0,
++        preferred_provider='pixabay', custom_clips={'scene_1': target.name}, pixabay_api_key='test-key')
++    assert path == target and name == 'User-selected video'
++
++
++def test_auto_router_uses_pixabay_and_records_source(clean_pixabay_state, media_files, monkeypatch):
++    mock_http(monkeypatch, media_files)
++    trace = []
++    path, name = providers.ROUTER.resolve_scene_clip(scene(), clean_pixabay_state.out / 'out.mp4', 0,
++        pixabay_api_key='test-key', trace=trace)
++    assert name == 'Pixabay stock video' and path.is_file()
++    assert trace[-1]['provider'] == 'pixabay' and trace[-1]['source_url'].startswith('https://pixabay.com/')
++    assert trace[0]['provider'] == 'pexels' and trace[0]['status'] == 'failed'
++
++
++def test_explicit_pixabay_failure_does_not_silently_change_provider(clean_pixabay_state, media_files, monkeypatch):
++    shutil.copy2(media_files / 'clip.mp4', clean_pixabay_state.videos / 'laptop_coding.mp4')
++    mock_http(monkeypatch, media_files, [])
++    with pytest.raises(MediaError, match='no usable footage'):
++        providers.ROUTER.resolve_scene_clip(scene(), clean_pixabay_state.out / 'out.mp4', 0,
++            preferred_provider='pixabay', pixabay_api_key='test-key')
++
++
++def test_auto_can_fall_back_to_matched_local_footage(clean_pixabay_state, media_files, monkeypatch):
++    target = clean_pixabay_state.videos / 'laptop_coding.mp4'
++    shutil.copy2(media_files / 'clip.mp4', target)
++    mock_http(monkeypatch, media_files, status=403)
++    path, name = providers.ROUTER.resolve_scene_clip(scene(), clean_pixabay_state.out / 'out.mp4', 0,
++        pixabay_api_key='test-key')
++    assert path == target and name == 'Matched local library'
++
++
++def test_preflight_accepts_pixabay_key_but_does_not_claim_online_validation(clean_pixabay_state):
++    payload = {'storyboard': {'scenes': [scene()]}, 'pixabay_api_key': 'test-key',
++               'scene_providers': {'scene_1': 'pixabay'}}
++    with TestClient(api.app) as client:
++        result = client.post('/api/preflight', json=payload).json()
++    assert result['ready'] and 'during rendering' in result['warnings'][0]
++
++
++def test_preflight_rejects_missing_pixabay_key(clean_pixabay_state):
++    payload = {'storyboard': {'scenes': [scene()]}, 'scene_providers': {'scene_1': 'pixabay'}}
++    with TestClient(api.app) as client:
++        result = client.post('/api/preflight', json=payload).json()
++    assert not result['ready'] and 'Pixabay key is missing' in result['errors'][0]
++
++
++def test_settings_save_keeps_ffmpeg_and_other_credentials(clean_pixabay_state):
++    path = clean_pixabay_state.root / '.env'
++    original = (b'# User configuration\r\nFFMPEG_EXE=C:\\tools\\ffmpeg.exe\r\n'
++                b'FFPROBE_EXE=C:\\tools\\ffprobe.exe\r\nGEMINI_API_KEY=existing-gemini\r\n'
++                b'PEXELS_API_KEY=existing-pexels\r\nPIXABAY_API_KEY=\r\nPIXABAY_API_KEY=old-test-key\r\n')
++    path.write_bytes(original)
++    with TestClient(api.app) as client:
++        response = client.post('/api/settings', json={'pixabay_api_key': 'new-test-pixabay'})
++        assert response.status_code == 200
++        settings = client.get('/api/settings').json()
++        assert settings['has_pixabay_key'] and 'new-test-pixabay' not in json.dumps(settings)
++        provider_rows = client.get('/api/video-providers').json()
++        assert next(row for row in provider_rows if row['id'] == 'pixabay')['is_available']
++    after = path.read_bytes()
++    assert after.count(b'PIXABAY_API_KEY=') == 1
++    for line in original.splitlines(keepends=True):
++        if not line.startswith(b'PIXABAY'):
++            assert line in after
++
++
++def test_settings_key_append_handles_missing_final_newline(tmp_path):
++    path = tmp_path / '.env'
++    original = b'\xef\xbb\xbfFFMPEG_EXE=C:/ffmpeg.exe\r\nFFPROBE_EXE=C:/ffprobe.exe'
++    path.write_bytes(original)
++    update_env_keys(path, {'PIXABAY_API_KEY': 'test-key'})
++    assert path.read_bytes() == original + b'\r\nPIXABAY_API_KEY=test-key\r\n'
++
++
++def test_empty_settings_submission_does_not_erase_config(clean_pixabay_state):
++    path = clean_pixabay_state.root / '.env'
++    original = b'FFMPEG_EXE=C:\\tools\\ffmpeg.exe\nPIXABAY_API_KEY=previous-key'
++    path.write_bytes(original)
++    with TestClient(api.app) as client:
++        assert client.post('/api/settings', json={}).status_code == 200
++    assert path.read_bytes() == original
++
++
++def test_settings_newline_injection_rejected_without_mutation(clean_pixabay_state):
++    path = clean_pixabay_state.root / '.env'
++    path.write_text('FFMPEG_EXE=keep-me\n')
++    with TestClient(api.app) as client:
++        response = client.post('/api/settings', json={'pixabay_api_key': 'bad\nFFMPEG_EXE=changed'})
++    assert response.status_code == 400 and path.read_text() == 'FFMPEG_EXE=keep-me\n'
++    assert not providers.pixabay_key()
++
++
++def test_test_key_endpoint_does_not_save_a_typed_key(clean_pixabay_state, media_files, monkeypatch):
++    calls = mock_http(monkeypatch, media_files)
++    with TestClient(api.app) as client:
++        response = client.post('/api/test-pixabay-key', json={'pixabay_api_key': 'unsaved-test-key'})
++        assert response.json()['valid']
++        assert not client.get('/api/settings').json()['has_pixabay_key']
++    assert not (clean_pixabay_state.root / '.env').exists()
++    assert calls[0][1]['params']['per_page'] == 3
++
++
++def test_mixed_upload_pixabay_pipeline_keeps_telugu_roman_music_and_1080p(clean_pixabay_state, media_files, monkeypatch):
++    work = clean_pixabay_state
++    mock_http(monkeypatch, media_files)
++    uploaded = work.uploads / 'owned.mp4'
++    shutil.copy2(media_files / 'clip.mp4', uploaded)
++    # Use real sound data as narration test input, not live Telugu synthesis.
++    seen_voice_ids = []
++    async def voices(scenes, voice_id, job_id):
++        seen_voice_ids.append(voice_id)
++        return [{'audio_path': str(media_files / 'voice.wav'), 'duration': 0.8, 'words': []} for s in scenes]
++    monkeypatch.setattr(api, '_generate_scene_voices', voices)
++    run_checked([executable('ffmpeg'), '-nostdin', '-y', '-v', 'error', '-i', str(media_files / 'voice.wav'),
++                 str(work.music / 'test_music.mp3')])
++    payload = {'storyboard': {'scenes': [scene(1), scene(2), scene(3)]},
++               'voice_id': 'te-IN-MohanNeural', 'subtitle_format': 'roman', 'music_track': 'test_music',
++               'pixabay_api_key': 'request-test-key',
++               'custom_clips': {'scene_1': uploaded.name, 'scene_3': uploaded.name},
++               'scene_providers': {'scene_2': 'pixabay'}}
++    with TestClient(api.app) as client:
++        response = client.post('/api/render-video', json=payload)
++        assert response.status_code == 200, response.text
++        job_id = response.json()['job_id']
++        job = client.get(f'/api/job/{job_id}').json()
++    assert job['status'] == 'COMPLETED', job
++    assert seen_voice_ids == ['te-IN-MohanNeural']
++    selected = [row for row in job['visual_report'] if row['status'] == 'selected']
++    assert [row['provider'] for row in selected] == ['upload', 'pixabay', 'upload']
++    output = work.out / f'{job_id}_final.mp4'
++    info = validate_final(output, 2.4, full_decode=True)
++    assert (info['video']['width'], info['video']['height']) == (1080, 1920)
++    assert info['video']['r_frame_rate'] == '30/1' and info['audio']['sample_rate'] == '48000'
++    subtitles = '\n'.join(p.read_text() for p in (work.out / 'jobs' / job_id).glob('*.ass'))
++    assert 'MANAM' in subtitles.upper()
++
++
++def test_failed_job_retains_provider_attempt_report(clean_pixabay_state, media_files, monkeypatch):
++    mock_http(monkeypatch, media_files, [])
++    payload = {'storyboard': {'scenes': [scene()]}, 'pixabay_api_key': 'request-test-key',
++               'scene_providers': {'scene_1': 'pixabay'}}
++    with TestClient(api.app) as client:
++        response = client.post('/api/render-video', json=payload)
++        job = client.get('/api/job/' + response.json()['job_id']).json()
++    assert job['status'] == 'FAILED' and job['video_url'] is None
++    assert job['visual_report'][0]['provider'] == 'pixabay'
++    assert 'request-test-key' not in json.dumps(job)
+--- a/tools/doctor.py
++++ b/tools/doctor.py
+@@ -17,6 +17,7 @@
+     report = {"python": sys.version.split()[0], "platform": platform.platform(),
+               "project_root": str(ROOT), "keys": {
+                   "pexels_present": bool(os.getenv("PEXELS_API_KEY", "")),
++                  "pixabay_present": bool(os.getenv("PIXABAY_API_KEY", "")),
+                   "gemini_present": bool(os.getenv("GEMINI_API_KEY", ""))},
+               "media_tools": {}, "packages": {}, "library": [], "warnings": []}
+     ok = True
+@@ -40,8 +41,8 @@
+             except MediaError as exc:
+                 row.update(valid=False, error=str(exc))
+         report["library"].append(row)
+-    if not report["keys"]["pexels_present"]:
+-        report["warnings"].append("No Pexels key. Upload clips or use a relevant local footage library.")
++    if not (report["keys"]["pexels_present"] or report["keys"]["pixabay_present"]):
++        report["warnings"].append("No stock-video key. Add a Pixabay or Pexels key, upload clips, or use a relevant local footage library.")
+     if not any(item["kind"] != "photo_motion" for item in report["library"]):
+         report["warnings"].append("Bundled library has only photo-animation demos. They require explicit opt-in.")
+     report["warnings"].append("No online provider connectivity was tested by this diagnostic.")

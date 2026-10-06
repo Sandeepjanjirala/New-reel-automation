@@ -1,0 +1,12 @@
+{
+  "mode": "offline Chromium DOM checks with simulated API replies",
+  "checks": [
+    "Pixabay key field, test, save, saved-status badge, clearing secret input",
+    "Upload Clip and Use Clip for All Scenes still assign all eight scenes",
+    "Mixed upload/Pixabay selection and editable English keywords",
+    "Set All Scenes To Pixabay works; existing voices and Roman caption controls retained",
+    "Creator/source report uses safe text and rejects unsafe source URLs"
+  ],
+  "javascript_errors": [],
+  "result": "PASS"
+}

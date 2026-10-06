@@ -1,0 +1,80 @@
+{
+  "comparison": "supplied ShortsGenius_Repaired base vs additive Pixabay update",
+  "files": [
+    {
+      "file": "backend/services/voice_engine.py",
+      "sha256": "15efdd368593173a42949df48f8927775cac25c8a773e65ae881b699c5ae9d42",
+      "unchanged": true
+    },
+    {
+      "file": "backend/services/subtitle_engine.py",
+      "sha256": "3a9d8a9df702f850b48a099d925029d46419b7e64eb2a5b4b541b6ea04fd515f",
+      "unchanged": true
+    },
+    {
+      "file": "backend/services/video_compositor.py",
+      "sha256": "3dd33abcaed429ec60a97b21bd1ba2699a1bb83615e17beebb6cfe606f2a2f19",
+      "unchanged": true
+    },
+    {
+      "file": "backend/services/media_tools.py",
+      "sha256": "7e3904cbbfdcd6fe8efabaefc23c1c83ad44ff115dd540fc67a763723772a892",
+      "unchanged": true
+    },
+    {
+      "file": "backend/services/script_generator.py",
+      "sha256": "4cce9dde6cc74ddc8fb9dfdccc33c601c4408d21eb3f26b60ff345b8f9777b16",
+      "unchanged": true
+    },
+    {
+      "file": "run_server.py",
+      "sha256": "60776fe80aad1c1a1b5648075432c2915a65378019476b72e7e85bab7b92f864",
+      "unchanged": true
+    },
+    {
+      "file": "requirements.txt",
+      "sha256": "1d9bab71c965dc3b93105c31855bcb7c5412bc27746e0f52a29bc459b0d776ee",
+      "unchanged": true
+    },
+    {
+      "file": "requirements-dev.txt",
+      "sha256": "c23feb58b6f9cab899b3e457b6cad56158f5315b366cd0f7a210feef72af395b",
+      "unchanged": true
+    },
+    {
+      "file": "tests/test_repair.py",
+      "sha256": "00fd9abc6dbea6d9b52d89ff1d7a19105c160000a2a9adcd71989078bbc959fd",
+      "unchanged": true
+    },
+    {
+      "file": "tools/smoke_test.py",
+      "sha256": "d2e0d4a378cf46e3703d110d279e5074fc44096a596b1d9443f926a511404eb0",
+      "unchanged": true
+    },
+    {
+      "file": "backend/assets/music/lofi_chill.mp3",
+      "sha256": "de0ef7ffe9463c047f8d75981aa5ff356556c1225b5b0054dfdb95dfbfaafa70",
+      "unchanged": true
+    },
+    {
+      "file": "backend/assets/music/suspense_pulse.mp3",
+      "sha256": "99c2fbbbea06be4d1dcf0884bb1c82f6f6a42a07a175895c51b0ec3d87ac6418",
+      "unchanged": true
+    },
+    {
+      "file": "backend/assets/videos/facts_cosmos.mp4",
+      "sha256": "c15f9d638b8db3e10d474f53dccddf21a1abf70029b733de5fc8088deb7305ad",
+      "unchanged": true
+    },
+    {
+      "file": "backend/assets/videos/facts_nebula.mp4",
+      "sha256": "58cd3c11e0806073f8ed3ed97016480434d65c791dc622718e9ac08adb4925d5",
+      "unchanged": true
+    },
+    {
+      "file": "backend/assets/videos/manifest.json",
+      "sha256": "55db61a642cd1ff30352f813d0329ac08efa66e36ab7cd76ecd72b6037777f82",
+      "unchanged": true
+    }
+  ]
+}

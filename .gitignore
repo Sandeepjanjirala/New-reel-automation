@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+
+# Environments
+venv/
+.venv/
+env/
+ENV/
+
+# Runtime Output
+backend/output/*
+!backend/output/.gitkeep
+output/
+
+# Logs & Environment
+.env.local
+*.log
+
+# IDE
+.vscode/
+.idea/
+.DS_Store
+
+
+# Local environments, keys, generated media and tests
+.env
+.env.*
+!.env.example
+_updates/
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+backend/output/*
+!backend/output/.gitkeep

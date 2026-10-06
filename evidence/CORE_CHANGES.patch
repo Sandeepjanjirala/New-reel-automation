@@ -1,0 +1,2961 @@
+--- original/requirements.txt
++++ repaired/requirements.txt
+@@ -1,13 +1,9 @@
+-# ShortsGenius - AI Short-Form Video & Reel Generator
+-fastapi>=0.110.0
+-uvicorn>=0.28.0
+-edge-tts>=6.1.10
+-moviepy>=1.0.3
+-pillow>=10.2.0
+-requests>=2.31.0
+-python-dotenv>=1.0.1
+-pydantic>=2.6.0
+-numpy>=1.26.0
+-aiofiles>=23.2.1
+-imageio-ffmpeg>=0.4.9
+-python-multipart>=0.0.6
++# Python 3.10+; install system FFmpeg AND ffprobe separately.
++fastapi>=0.110,<1
++uvicorn>=0.28,<1
++edge-tts==7.2.8
++pillow>=10.2,<13
++requests>=2.31,<3
++python-dotenv>=1.0,<2
++pydantic>=2.6,<3
++python-multipart>=0.0.18,<1
+--- original/requirements-dev.txt
++++ repaired/requirements-dev.txt
+@@ -0,0 +1,3 @@
++-r requirements.txt
++pytest>=8,<10
++httpx>=0.27,<1
+--- original/backend/app.py
++++ repaired/backend/app.py
+@@ -3,13 +3,16 @@
+ import shutil
+ import asyncio
+ import requests
++import json
++import traceback
++from datetime import datetime, timezone
+ from pathlib import Path
+ from typing import Optional, List, Dict, Any
+ from fastapi import FastAPI, HTTPException, BackgroundTasks, UploadFile, File, Form
+ from fastapi.middleware.cors import CORSMiddleware
+ from fastapi.staticfiles import StaticFiles
+ from fastapi.responses import FileResponse, JSONResponse
+-from pydantic import BaseModel
++from pydantic import BaseModel, Field
+ 
+ from .config import (
+     BASE_DIR,
+@@ -28,6 +31,11 @@
+ from .services.voice_engine import _generate_scene_voices, synthesize_voice_with_timestamps
+ from .services.visual_engine import generate_scene_visuals
+ from .services.video_compositor import compose_final_video
++from .services.media_tools import (MediaError, check_tools, executable, probe_media,
++                                   run_checked, safe_child, validate_final, validate_job_id)
++from .services.video_providers import (ROUTER, UPLOADS_DIR, MAX_MEDIA_BYTES, VIDEO_EXTENSIONS,
++                                      resolve_custom_clip, source_kind, pexels_key,
++                                      CuratedStockProvider)
+ 
+ app = FastAPI(
+     title="ShortsGenius API",
+@@ -38,19 +46,87 @@
+ # Enable CORS for local web dev
+ app.add_middleware(
+     CORSMiddleware,
+-    allow_origins=["*"],
+-    allow_credentials=True,
++    allow_origins=["http://127.0.0.1:8080", "http://localhost:8080"],
++    allow_credentials=False,
+     allow_methods=["*"],
+     allow_headers=["*"],
+ )
+ 
+ # Job Status Store
+ JOBS: Dict[str, Dict[str, Any]] = {}
++RENDER_LOCK = asyncio.Semaphore(1)
++UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
++
++
++def _save_job(job_id: str):
++    folder = OUTPUT_DIR / "jobs" / validate_job_id(job_id)
++    folder.mkdir(parents=True, exist_ok=True)
++    temporary = folder / "status.tmp"
++    JOBS[job_id]["updated_at"] = datetime.now(timezone.utc).isoformat()
++    temporary.write_text(json.dumps(JOBS[job_id], indent=2), encoding="utf-8")
++    temporary.replace(folder / "status.json")
++
++
++def _validated_scenes(storyboard):
++    scenes = storyboard.get("scenes", [])
++    if not isinstance(scenes, list) or not 1 <= len(scenes) <= 40:
++        raise MediaError("A storyboard must contain 1 to 40 scenes.")
++    numbers = set()
++    for index, scene in enumerate(scenes, 1):
++        if not isinstance(scene, dict):
++            raise MediaError(f"Scene {index} is not an object.")
++        number = scene.get("scene_number", index)
++        if isinstance(number, bool) or not isinstance(number, int) or number < 1 or number in numbers:
++            raise MediaError("Scene numbers must be unique positive integers.")
++        numbers.add(number)
++        scene["scene_number"] = number
++        text = scene.get("narration", "")
++        if not isinstance(text, str) or not text.strip() or len(text) > 2000:
++            raise MediaError(f"Scene {number} needs narration of 1 to 2000 characters.")
++    return scenes
++
++
++def _preflight(req):
++    errors, warnings = [], []
++    try:
++        check_tools()
++        scenes = _validated_scenes(req.storyboard)
++    except (MediaError, ValueError) as exc:
++        return {"ready": False, "errors": [str(exc)], "warnings": []}
++    context = {"pexels_api_key": req.pexels_api_key, "allow_photo_motion": req.allow_photo_motion}
++    for scene in scenes:
++        number = scene["scene_number"]
++        key = f"scene_{number}"
++        source = (req.scene_providers or {}).get(key) or scene.get("provider") or "auto"
++        custom = (req.custom_clips or {}).get(key)
++        try:
++            if custom:
++                path = resolve_custom_clip(custom)
++                if source_kind(path) in {"photo_motion", "procedural"} and not req.allow_photo_motion:
++                    raise MediaError("Selected library item is a photo-animation demo; enable photo motion explicitly or upload footage.")
++                probe_media(path, require_video=True, decode=True)
++            elif source == "auto" and pexels_key(context):
++                warnings.append(f"Scene {number}: stock API connectivity and a usable match still need to be verified.")
++            elif source in ("auto", "curated"):
++                path = CuratedStockProvider().generate_clip(scene, OUTPUT_DIR / "unused.mp4", context)
++                if not path:
++                    raise MediaError("No matching allowed local footage. Upload a clip or configure a stock-video key.")
++            elif source == "pexels":
++                if not pexels_key(context):
++                    raise MediaError("Pexels key is missing. Upload footage or configure an existing key.")
++                warnings.append(f"Scene {number}: stock API connectivity and matching are checked during rendering.")
++            elif source == "procedural" and req.allow_photo_motion:
++                warnings.append(f"Scene {number}: a demo gradient was explicitly selected; this is not footage.")
++            else:
++                raise MediaError("Selected provider is not connected, or no upload is attached.")
++        except (MediaError, ValueError) as exc:
++            errors.append(f"Scene {number}: {exc}")
++    return {"ready": not errors, "errors": errors, "warnings": warnings, "scene_count": len(scenes)}
+ 
+ 
+ class GenerateScriptRequest(BaseModel):
+-    topic: str
+-    duration_sec: int = 40
++    topic: str = Field(min_length=3, max_length=500)
++    duration_sec: int = Field(default=40, ge=5, le=180)
+     niche: str = "Tech & AI"
+     language: str = "Telugu"
+ 
+@@ -65,6 +141,7 @@
+     subtitle_style: str = "hormozi_gold"
+     subtitle_position: str = "bottom_safe"
+     subtitle_format: str = "roman"
++    allow_photo_motion: bool = False
+ 
+ 
+ class SettingsRequest(BaseModel):
+@@ -119,6 +196,7 @@
+                 "id": vid.stem,
+                 "filename": vid.name,
+                 "title": vid.stem.replace("_", " ").title(),
++                "kind": source_kind(vid),
+                 "url": f"/api/video/asset/{vid.name}"
+             })
+     return clips
+@@ -126,31 +204,77 @@
+ 
+ @app.get("/api/video/asset/{filename}")
+ def get_asset_video(filename: str):
+-    path = VIDEOS_DIR / filename
++    path = safe_child(VIDEOS_DIR, filename)
+     if not path.exists():
+         raise HTTPException(status_code=404, detail="Asset video not found")
+     return FileResponse(path=str(path), media_type="video/mp4")
+ 
+ 
++@app.get("/api/health")
++def health():
++    try:
++        return check_tools()
++    except MediaError as exc:
++        return JSONResponse(status_code=503, content={"ok": False, "error": str(exc)})
++
++
++@app.post("/api/preflight")
++async def preflight(req: RenderVideoRequest):
++    return await asyncio.to_thread(_preflight, req)
++
++
+ @app.post("/api/upload-scene-video")
+ async def upload_scene_video(file: UploadFile = File(...), scene_number: int = Form(...)):
+-    """
+-    Handles user drag-and-drop or upload of a custom MP4 clip for a specific scene.
+-    """
+-    ext = Path(file.filename).suffix.lower()
+-    if ext not in [".mp4", ".mov", ".webm", ".mkv"]:
+-        raise HTTPException(status_code=400, detail="Only video files (.mp4, .mov, .webm) are supported.")
+-
+-    save_path = OUTPUT_DIR / f"upload_scene_{scene_number}_{uuid.uuid4().hex[:6]}{ext}"
+-    with open(save_path, "wb") as f:
+-        shutil.copyfileobj(file.file, f)
+-
+-    return {
+-        "status": "ok",
+-        "scene_key": f"scene_{scene_number}",
+-        "file_path": str(save_path),
+-        "filename": save_path.name
+-    }
++    if not 1 <= scene_number <= 1000:
++        raise HTTPException(status_code=400, detail="Invalid scene number.")
++    extension = Path(file.filename or "").suffix.lower()
++    if extension not in VIDEO_EXTENSIONS:
++        raise HTTPException(status_code=400, detail="Supported uploads: MP4, MOV, WEBM and MKV.")
++    token = uuid.uuid4().hex
++    target = UPLOADS_DIR / f"upload_{token}{extension}"
++    preview = UPLOADS_DIR / f"preview_{token}.mp4"
++    try:
++        size = 0
++        with target.open("wb") as handle:
++            while chunk := await file.read(1024 * 1024):
++                size += len(chunk)
++                if size > MAX_MEDIA_BYTES:
++                    raise HTTPException(status_code=413, detail="Upload exceeds 250 MB.")
++                handle.write(chunk)
++        metadata = await asyncio.to_thread(probe_media, target, require_video=True, decode=True)
++        if metadata["duration"] > 600:
++            raise HTTPException(status_code=400, detail="Upload must be no longer than 10 minutes.")
++        # A small browser-compatible preview also works for MKV/MOV source containers.
++        await asyncio.to_thread(run_checked, [
++            executable("ffmpeg"), "-nostdin", "-y", "-v", "error", "-filter_threads", "2",
++            "-i", str(target), "-t", str(min(5, metadata["duration"])), "-an",
++            "-vf", "scale=360:640:force_original_aspect_ratio=increase:in_range=auto:out_range=tv,crop=360:640,setsar=1,fps=30",
++            "-c:v", "libx264", "-preset", "veryfast", "-threads", "2", "-pix_fmt", "yuv420p", "-color_range", "tv",
++            "-movflags", "+faststart", str(preview)], timeout=120)
++        return {"status": "ok", "scene_key": f"scene_{scene_number}",
++                "asset_id": target.name, "file_path": target.name, "filename": target.name,
++                "preview_url": f"/api/upload-preview/{preview.name}",
++                "duration": round(metadata["duration"], 3),
++                "width": metadata["video"]["width"], "height": metadata["video"]["height"]}
++    except Exception as exc:
++        target.unlink(missing_ok=True)
++        preview.unlink(missing_ok=True)
++        if isinstance(exc, HTTPException):
++            raise
++        raise HTTPException(status_code=400, detail=f"Invalid upload: {exc}") from exc
++    finally:
++        await file.close()
++
++
++@app.get("/api/upload-preview/{filename}")
++def get_upload_preview(filename: str):
++    try:
++        path = safe_child(UPLOADS_DIR, filename)
++    except MediaError as exc:
++        raise HTTPException(status_code=400, detail=str(exc)) from exc
++    if not path.is_file() or not filename.startswith("preview_") or path.suffix != ".mp4":
++        raise HTTPException(status_code=404, detail="Preview not found.")
++    return FileResponse(str(path), media_type="video/mp4")
+ 
+ 
+ @app.get("/api/settings")
+@@ -214,7 +338,7 @@
+     try:
+         headers = {"Authorization": api_key, "User-Agent": "ShortsGenius/1.0"}
+         res = requests.get(
+-            "https://api.pexels.com/videos/search?query=technology&orientation=portrait&per_page=1",
++            "https://api.pexels.com/v1/videos/search?query=technology&orientation=portrait&per_page=1",
+             headers=headers,
+             timeout=8
+         )
+@@ -258,7 +382,10 @@
+ 
+ @app.post("/api/render-video")
+ async def api_render_video(req: RenderVideoRequest, background_tasks: BackgroundTasks):
+-    job_id = str(uuid.uuid4())[:8]
++    readiness = await asyncio.to_thread(_preflight, req)
++    if not readiness["ready"]:
++        raise HTTPException(status_code=400, detail=" | ".join(readiness["errors"]))
++    job_id = uuid.uuid4().hex[:12]
+     JOBS[job_id] = {
+         "status": "QUEUED",
+         "progress": 5,
+@@ -266,6 +393,8 @@
+         "video_url": None,
+         "error": None
+     }
++
++    _save_job(job_id)
+ 
+     # Run rendering pipeline in background
+     background_tasks.add_task(
+@@ -279,7 +408,8 @@
+         scene_providers=req.scene_providers,
+         subtitle_style=req.subtitle_style,
+         subtitle_position=req.subtitle_position,
+-        subtitle_format=req.subtitle_format
++        subtitle_format=req.subtitle_format,
++        allow_photo_motion=req.allow_photo_motion
+     )
+ 
+     return {"job_id": job_id, "status": "QUEUED"}
+@@ -287,32 +417,38 @@
+ 
+ @app.get("/api/job/{job_id}")
+ def get_job_status(job_id: str):
++    try:
++        validate_job_id(job_id)
++    except MediaError as exc:
++        raise HTTPException(status_code=400, detail=str(exc)) from exc
+     if job_id in JOBS:
+         return JOBS[job_id]
+-
+-    # Disk recovery: If server restarted or job finished, check disk
+-    final_video = OUTPUT_DIR / f"{job_id}_final.mp4"
+-    if final_video.exists():
+-        return {
+-            "status": "COMPLETED",
+-            "progress": 100,
+-            "message": "Reel rendered successfully!",
+-            "video_url": f"/api/video/{final_video.name}",
+-            "error": None
+-        }
+-
++    status_file = OUTPUT_DIR / "jobs" / job_id / "status.json"
++    if status_file.exists():
++        job = json.loads(status_file.read_text(encoding="utf-8"))
++        if job.get("status") not in ("COMPLETED", "FAILED"):
++            job.update(status="FAILED", error="Server restarted during this job; submit it again.",
++                       message="Interrupted render. Existing uploads are still available.")
++        elif job.get("status") == "COMPLETED":
++            try:
++                validate_final(OUTPUT_DIR / f"{job_id}_final.mp4")
++            except MediaError as exc:
++                job.update(status="FAILED", error=str(exc), video_url=None)
++        JOBS[job_id] = job
++        _save_job(job_id)
++        return job
+     raise HTTPException(status_code=404, detail="Job not found")
+ 
+ 
+ @app.get("/api/video/{filename}")
+ def get_rendered_video(filename: str):
+-    video_path = OUTPUT_DIR / filename
++    video_path = safe_child(OUTPUT_DIR, filename)
+     if not video_path.exists():
+         raise HTTPException(status_code=404, detail="Video not found")
+     return FileResponse(
+         path=str(video_path),
+         media_type="video/mp4",
+-        filename=filename
++        filename=filename, content_disposition_type="inline"
+     )
+ 
+ 
+@@ -323,7 +459,7 @@
+     """
+     videos = sorted(OUTPUT_DIR.glob("*_final.mp4"), key=os.path.getmtime, reverse=True)
+     if not videos:
+-        return {"video_url": "/api/video/demo_reel.mp4", "filename": "demo_reel.mp4"}
++        return {"video_url": None, "filename": None}
+     latest = videos[0]
+     return {"video_url": f"/api/video/{latest.name}", "filename": latest.name}
+ 
+@@ -354,7 +490,7 @@
+ 
+ @app.get("/api/audio/{filename}")
+ def get_audio_file(filename: str):
+-    path = OUTPUT_DIR / filename
++    path = safe_child(OUTPUT_DIR, filename)
+     if not path.exists():
+         raise HTTPException(status_code=404, detail="Audio file not found")
+     return FileResponse(path=str(path), media_type="audio/mpeg", filename=filename)
+@@ -382,75 +518,49 @@
+ 
+ 
+ async def _execute_render_pipeline(
+-    job_id: str,
+-    storyboard_data: Dict[str, Any],
+-    voice_id: str,
+-    music_track: Optional[str],
+-    pexels_api_key: Optional[str] = None,
++    job_id: str, storyboard_data: Dict[str, Any], voice_id: str,
++    music_track: Optional[str], pexels_api_key: Optional[str] = None,
+     custom_clips: Optional[Dict[str, str]] = None,
+     scene_providers: Optional[Dict[str, str]] = None,
+-    subtitle_style: str = "hormozi_gold",
+-    subtitle_position: str = "bottom_safe",
+-    subtitle_format: str = "roman"
++    subtitle_style: str = "hormozi_gold", subtitle_position: str = "bottom_safe",
++    subtitle_format: str = "roman", allow_photo_motion: bool = False,
+ ):
+-    try:
+-        scenes = storyboard_data.get("scenes", [])
+-        if not scenes:
+-            raise ValueError("No scenes provided in storyboard.")
+-
+-        # Step 1: Voiceover Generation
+-        JOBS[job_id]["status"] = "VOICE_GENERATION"
+-        JOBS[job_id]["progress"] = 25
+-        JOBS[job_id]["message"] = "Synthesizing neural voiceover with word-level timestamps..."
+-
+-        voice_data = await _generate_scene_voices(
+-            scenes=scenes,
+-            voice=voice_id,
+-            project_id=job_id
+-        )
+-
+-        # Step 2: Visual B-Roll Generation (Real video clips, live Pexels, or curated stock)
+-        JOBS[job_id]["status"] = "VISUAL_GENERATION"
+-        JOBS[job_id]["progress"] = 55
+-        JOBS[job_id]["message"] = "Retrieving real 1080x1920 vertical video B-roll clips for each scene..."
+-
+-        visual_paths = await asyncio.to_thread(
+-            generate_scene_visuals,
+-            scenes=scenes,
+-            project_id=job_id,
+-            pexels_api_key=pexels_api_key,
+-            custom_clips=custom_clips,
+-            scene_providers=scene_providers
+-        )
+-
+-        # Step 3: Video Assembly & Subtitle Compositing
+-        JOBS[job_id]["status"] = "COMPOSITING"
+-        JOBS[job_id]["progress"] = 80
+-        JOBS[job_id]["message"] = "Compositing video clips, burning active kinetic subtitles, and ducking audio..."
+-
+-        video_path = await asyncio.to_thread(
+-            compose_final_video,
+-            scenes=scenes,
+-            voice_data=voice_data,
+-            visual_paths=visual_paths,
+-            music_track_name=music_track,
+-            project_id=job_id,
+-            subtitle_style=subtitle_style,
+-            subtitle_position=subtitle_position,
+-            subtitle_format=subtitle_format
+-        )
+-
+-        # Step 4: Done!
+-        JOBS[job_id]["status"] = "COMPLETED"
+-        JOBS[job_id]["progress"] = 100
+-        JOBS[job_id]["message"] = "Reel rendered successfully!"
+-        JOBS[job_id]["video_url"] = f"/api/video/{video_path.name}"
+-
+-    except Exception as e:
+-        JOBS[job_id]["status"] = "FAILED"
+-        JOBS[job_id]["error"] = str(e)
+-        JOBS[job_id]["message"] = f"Pipeline error: {str(e)}"
+-        print(f"[RenderPipelineError] {e}")
++    async with RENDER_LOCK:
++        try:
++            scenes = _validated_scenes(storyboard_data)
++            # Footage is resolved before spending time on network speech generation.
++            JOBS[job_id].update(status="VISUAL_GENERATION", progress=15,
++                               message="Finding and validating footage for every scene...")
++            _save_job(job_id)
++            visual_paths = await asyncio.to_thread(
++                generate_scene_visuals, scenes=scenes, project_id=job_id,
++                pexels_api_key=pexels_api_key, custom_clips=custom_clips,
++                scene_providers=scene_providers, allow_photo_motion=allow_photo_motion)
++            report = OUTPUT_DIR / "jobs" / job_id / "visual_report.json"
++            JOBS[job_id]["visual_report"] = json.loads(report.read_text(encoding="utf-8"))
++            JOBS[job_id].update(status="VOICE_GENERATION", progress=45,
++                               message="Generating narration and measuring actual audio durations...")
++            _save_job(job_id)
++            voices = await _generate_scene_voices(scenes, voice_id, job_id)
++            JOBS[job_id].update(status="COMPOSITING", progress=75,
++                               message="Rendering footage, captions and audio; validating the final MP4...")
++            _save_job(job_id)
++            final = await asyncio.to_thread(
++                compose_final_video, scenes=scenes, voice_data=voices,
++                visual_paths=visual_paths, music_track_name=music_track,
++                project_id=job_id, subtitle_style=subtitle_style,
++                subtitle_position=subtitle_position, subtitle_format=subtitle_format)
++            validate_final(final)
++            JOBS[job_id].update(status="COMPLETED", progress=100,
++                               message="MP4 rendered and validated. Review the scene content before posting.",
++                               video_url=f"/api/video/{final.name}")
++            _save_job(job_id)
++        except Exception as exc:
++            JOBS[job_id].update(status="FAILED", error=str(exc), message=f"Pipeline error: {exc}", video_url=None)
++            folder = OUTPUT_DIR / "jobs" / job_id
++            folder.mkdir(parents=True, exist_ok=True)
++            (folder / "pipeline_error.log").write_text(traceback.format_exc(), encoding="utf-8")
++            _save_job(job_id)
+ 
+ 
+ # Serve frontend static assets
+--- original/frontend/index.html
++++ repaired/frontend/index.html
+@@ -992,6 +992,11 @@
+         <p style="font-size: 0.78rem; color: var(--text-muted);" id="progress-detail">Starting video engine...</p>
+       </div>
+ 
++      <label style="display:block; margin:12px 0; font-size:0.85rem;">
++        <input type="checkbox" id="allow-photo-motion">
++        Allow photo-animation demos (not real footage). Off by default.
++      </label>
++      <pre id="render-diagnostics" style="white-space:pre-wrap; font-size:0.8rem; max-height:200px; overflow:auto;"></pre>
+       <button class="btn btn-render" id="btn-render-video" onclick="handleRenderVideo()" style="display: none;">
+         <span>🚀 Render 1080x1920 Instagram Reel</span>
+       </button>
+@@ -1018,13 +1023,13 @@
+     <section class="preview-column">
+       <div class="phone-mockup">
+         <div class="phone-notch"></div>
+-        <video class="video-player" id="main-video-player" controls playsinline loop preload="auto" src="/api/video/demo_reel.mp4">
++        <video class="video-player" id="main-video-player" controls playsinline loop preload="metadata">
+           Your browser does not support vertical MP4 video playback.
+         </video>
+       </div>
+ 
+       <div style="width: 320px; display: flex; flex-direction: column; gap: 0.75rem;">
+-        <a id="btn-download" href="/api/video/demo_reel.mp4" download="shortsgenius_reel.mp4" class="btn btn-primary" style="width: 100%;">
++        <a id="btn-download" href="#" aria-disabled="true" download="shortsgenius_reel.mp4" class="btn btn-primary" style="width: 100%;">
+           <span>📥 Download 1080x1920 Reel</span>
+         </a>
+       </div>
+@@ -1092,12 +1097,12 @@
+       <div class="form-group">
+         <label class="form-label">Pexels Free API Key (Real 4K/1080p Stock Videos)</label>
+         <div style="display: flex; gap: 0.5rem;">
+-          <input type="password" class="text-input" id="pexels-key-input" placeholder="Paste Pexels API key (e.g. from pexels.com/api)">
++          <input type="password" class="text-input" id="pexels-key-input" placeholder="Paste an existing Pexels API key">
+           <button class="btn btn-secondary" style="white-space: nowrap; padding: 0.4rem 0.85rem;" type="button" onclick="testPexelsKeyConnection()">🔍 Test Key</button>
+         </div>
+         <p id="pexels-key-status" style="font-size: 0.74rem; color: var(--text-sub); margin-top: 0.35rem;">
+           Enables live 1080x1920 video search on any topic. 
+-          <a href="https://www.pexels.com/api/" target="_blank" style="color: var(--primary); text-decoration: underline;">Get free key in 30 seconds &rarr;</a>
++          <a href="https://www.pexels.com/api/" target="_blank" style="color: var(--primary); text-decoration: underline;">Pexels API access status &rarr;</a>
+         </p>
+       </div>
+ 
+@@ -1137,7 +1142,7 @@
+   </div>
+ 
+   <!-- Hidden File Input for Scene Video Upload -->
+-  <input type="file" id="scene-video-uploader" accept="video/mp4,video/quicktime,video/webm" style="display: none;" onchange="handleSceneVideoFileSelected(event)">
++  <input type="file" id="scene-video-uploader" accept=".mp4,.mov,.webm,.mkv,video/mp4,video/quicktime,video/webm,video/x-matroska" style="display: none;" onchange="handleSceneVideoFileSelected(event)">
+ 
+   <!-- Notification Toast -->
+   <div class="toast" id="toast">
+@@ -1145,9 +1150,16 @@
+     <span id="toast-message" style="font-size: 0.88rem; color: #FFF;">Notification</span>
+   </div>
+ 
++  <footer style="padding:16px;text-align:center;font-size:12px;color:#a0a0b0;">
++    Automatic stock footage, when selected, is provided by
++    <a href="https://www.pexels.com" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;">Pexels</a>.
++    Review each clip and its saved source information before publishing.
++  </footer>
+   <script>
+     let currentStoryboard = null;
+-    let customClips = {}; // scene_1 -> filePath
++    let customClips = {}; // scene key -> server-issued media identifier
++    let customClipPreviews = {};
++    let pendingUploads = 0;
+     let sceneProviders = {}; // scene_1 -> 'auto' | 'curated' | 'pexels' | 'ai_video' | 'procedural' | 'upload'
+     let pollInterval = null;
+     let targetUploadScene = 1;
+@@ -1198,6 +1210,7 @@
+         if (!res.ok) throw new Error(await res.text());
+         currentStoryboard = await res.json();
+         customClips = {}; // reset custom overrides
++        customClipPreviews = {};
+         sceneProviders = {}; // reset model overrides
+         renderStoryboardUI(currentStoryboard);
+         renderInstagramPackage(currentStoryboard);
+@@ -1229,7 +1242,7 @@
+         <div class="batch-provider-bar" style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap; margin-bottom:1rem; padding:0.65rem 0.9rem; background:var(--bg-surface-elevated); border:1px solid var(--border-color); border-radius:10px;">
+           <span style="font-size:0.75rem; color:var(--text-muted); font-weight:700;">⚡ Set All Scenes To:</span>
+           <button class="mini-btn" type="button" onclick="applyProviderToAll('curated')">🎬 Curated Stock (1080p)</button>
+-          <button class="mini-btn" type="button" onclick="applyProviderToAll('ai_video')">✨ Generative AI Video</button>
++          <button class="mini-btn" type="button" disabled title="No video-generation API is connected">AI Video: not connected</button>
+           <button class="mini-btn" type="button" onclick="applyProviderToAll('pexels')">🌐 Pexels Video API</button>
+           <button class="mini-btn" type="button" onclick="applyProviderToAll('auto')">⚡ Auto Router</button>
+         </div>
+@@ -1248,10 +1261,10 @@
+             <div style="display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap;">
+               <span class="scene-tag">${catBadge}</span>
+               <select class="scene-provider-select" id="provider-select-${sceneNum}" onchange="updateSceneProvider(${sceneNum}, this.value)" title="Select Video Provider Model">
+-                <option value="auto" ${currentProvider === 'auto' ? 'selected' : ''}>⚡ Auto (Router Cascade)</option>
+-                <option value="curated" ${currentProvider === 'curated' ? 'selected' : ''}>🎬 Curated Stock (1080p Real Footage)</option>
+-                <option value="pexels" ${currentProvider === 'pexels' ? 'selected' : ''}>🌐 Pexels Video API (1080p Free API)</option>
+-                <option value="ai_video" ${currentProvider === 'ai_video' ? 'selected' : ''}>✨ Generative AI Video (Neural + Motion)</option>
++                <option value="auto" ${currentProvider === 'auto' ? 'selected' : ''}>⚡ Auto: Pexels then matching local footage</option>
++                <option value="curated" ${currentProvider === 'curated' ? 'selected' : ''}>🎬 Matched Local Library</option>
++                <option value="pexels" ${currentProvider === 'pexels' ? 'selected' : ''}>🌐 Pexels Stock Video (existing API key required)</option>
++                <option value="ai_video" disabled>AI video API - not connected (upload generated MP4)</option>
+                 ${hasCustom ? `<option value="upload" ${currentProvider === 'upload' ? 'selected' : ''}>📁 User Upload Clip</option>` : ''}
+               </select>
+             </div>
+@@ -1259,6 +1272,7 @@
+               <button class="mini-btn" id="voice-btn-${idx}" onclick="previewSceneVoice(${idx})" title="Listen to spoken audio for this scene">🔊 Preview</button>
+               <span class="scene-duration">⏱️ ~${scene.duration_estimate_sec}s</span>
+             </div>
++          </div>
+           <div style="font-size: 0.72rem; color: var(--primary); font-weight: 600; margin-top: 0.2rem; margin-bottom: 0.2rem; display: flex; justify-content: space-between;">
+             <span>🎙️ Spoken Telugu (AI Voice Script):</span>
+           </div>
+@@ -1276,9 +1290,12 @@
+               </span>
+               <div class="broll-actions">
+                 <button class="mini-btn" onclick="triggerSceneVideoUpload(${sceneNum})">📁 Upload Clip</button>
++                ${hasCustom ? `<button class="mini-btn" onclick="removeSceneClip(${sceneNum})">Remove Clip</button>
++                <button class="mini-btn" onclick="applyClipToAll(${sceneNum})">Use Clip for All Scenes</button>` : ''}
+                 <button class="mini-btn" onclick="openLibraryModal(${sceneNum})">🎬 Choose Stock</button>
+               </div>
+             </div>
++            ${customClipPreviews[sceneKey] ? `<video src="${escapeHtml(customClipPreviews[sceneKey])}" controls muted playsinline preload="metadata" style="width:120px;max-height:220px;margin:10px 0;"></video>` : ''}
+             <div style="font-size: 0.73rem; color: #94A3B8; font-style: italic;">
+               <strong>Model Prompt (EN):</strong> ${escapeHtml(scene.visual_prompt)}
+             </div>
+@@ -1289,28 +1306,50 @@
+     }
+ 
+     function updateSceneProvider(sceneNum, provider) {
+-      const sceneKey = `scene_${sceneNum}`;
+-      sceneProviders[sceneKey] = provider;
++      const key = `scene_${sceneNum}`;
++      sceneProviders[key] = provider;
++      // Explicitly changing the source releases the old upload override.
++      if (provider !== 'upload') {
++        delete customClips[key];
++        delete customClipPreviews[key];
++      }
++      renderStoryboardUI(currentStoryboard);
+       if (provider === 'pexels' && !hasPexelsKey) {
+-        showToast('⚠️ Pexels requires a free API key. Click ⚙️ Settings at top to paste your key.', 'warning');
+-      } else {
+-        showToast(`Scene ${sceneNum} source set to: ${provider.toUpperCase()}`, 'info');
+-      }
++        showToast('Pexels requires an existing API key. Upload footage as an alternative.', 'warning');
++      }
++    }
++
++    function removeSceneClip(sceneNum) {
++      const key = `scene_${sceneNum}`;
++      delete customClips[key];
++      delete customClipPreviews[key];
++      sceneProviders[key] = 'auto';
++      renderStoryboardUI(currentStoryboard);
++    }
++
++    function applyClipToAll(sceneNum) {
++      const key = `scene_${sceneNum}`;
++      if (!customClips[key] || !currentStoryboard) return;
++      currentStoryboard.scenes.forEach((scene, idx) => {
++        const other = `scene_${scene.scene_number || idx + 1}`;
++        customClips[other] = customClips[key];
++        customClipPreviews[other] = customClipPreviews[key];
++        sceneProviders[other] = 'upload';
++      });
++      renderStoryboardUI(currentStoryboard);
++      showToast('Clip assigned to all scenes. Each scene currently starts from the beginning of the clip.', 'info');
+     }
+ 
+     function applyProviderToAll(provider) {
+-      if (!currentStoryboard || !currentStoryboard.scenes) return;
+-      currentStoryboard.scenes.forEach((_, idx) => {
+-        const sNum = idx + 1;
+-        sceneProviders[`scene_${sNum}`] = provider;
+-        const sel = document.getElementById(`provider-select-${sNum}`);
+-        if (sel) sel.value = provider;
++      if (!currentStoryboard) return;
++      currentStoryboard.scenes.forEach((scene, idx) => {
++        const key = `scene_${scene.scene_number || idx + 1}`;
++        sceneProviders[key] = provider;
++        delete customClips[key];
++        delete customClipPreviews[key];
+       });
+-      if (provider === 'pexels' && !hasPexelsKey) {
+-        showToast('⚠️ Pexels requires a free API key. Click ⚙️ Settings to enter your key.', 'warning');
+-      } else {
+-        showToast(`All scenes set to: ${provider.toUpperCase()}`, 'success');
+-      }
++      renderStoryboardUI(currentStoryboard);
++      showToast(`All scenes set to ${provider}; previous manual attachments were released.`, 'info');
+     }
+ 
+     function renderInstagramPackage(sb) {
+@@ -1488,43 +1527,35 @@
+     async function handleSceneVideoFileSelected(event) {
+       const file = event.target.files[0];
+       if (!file) return;
+-
++      const sceneNumber = targetUploadScene;
++      const storyboardAtStart = currentStoryboard;
++      if (file.size > 250 * 1024 * 1024) {
++        showToast('Upload must be 250 MB or smaller.', 'error');
++        event.target.value = '';
++        return;
++      }
+       const formData = new FormData();
+       formData.append('file', file);
+-      formData.append('scene_number', targetUploadScene);
+-
+-      showToast(`Uploading video for Scene ${targetUploadScene}...`, 'info');
+-
++      formData.append('scene_number', sceneNumber);
++      pendingUploads++;
++      showToast(`Uploading and validating Scene ${sceneNumber} footage...`, 'info');
+       try {
+-        const res = await fetch('/api/upload-scene-video', {
+-          method: 'POST',
+-          body: formData
+-        });
+-        if (!res.ok) throw new Error(await res.text());
++        const res = await fetch('/api/upload-scene-video', {method: 'POST', body: formData});
+         const data = await res.json();
+-
+-        customClips[data.scene_key] = data.file_path;
++        if (!res.ok) throw new Error(data.detail || 'Upload failed');
++        if (currentStoryboard !== storyboardAtStart) {
++          showToast('Storyboard changed during upload. Attach the clip to the new storyboard again.', 'warning');
++          return;
++        }
++        customClips[data.scene_key] = data.asset_id || data.file_path;
++        customClipPreviews[data.scene_key] = data.preview_url;
+         sceneProviders[data.scene_key] = 'upload';
+-
+-        // Update badge UI
+-        const badge = document.getElementById(`broll-badge-${targetUploadScene}`);
+-        if (badge) {
+-          badge.innerHTML = `🟢 Custom Clip: ${escapeHtml(data.filename)}`;
+-        }
+-        const select = document.getElementById(`provider-select-${targetUploadScene}`);
+-        if (select) {
+-          if (!select.querySelector('option[value="upload"]')) {
+-            const opt = document.createElement('option');
+-            opt.value = 'upload';
+-            opt.textContent = '📁 User Upload Clip';
+-            select.appendChild(opt);
+-          }
+-          select.value = 'upload';
+-        }
+-        showToast(`✅ Video attached to Scene ${targetUploadScene}!`, 'success');
++        renderStoryboardUI(currentStoryboard);
++        showToast(`Scene ${sceneNumber}: validated ${data.width}x${data.height} video, ${data.duration}s.`, 'success');
+       } catch (err) {
+-        showToast(`Failed to upload clip: ${err.message}`, 'error');
++        showToast(`Upload failed: ${err.message}`, 'error');
+       } finally {
++        pendingUploads--;
+         event.target.value = '';
+       }
+     }
+@@ -1550,7 +1581,7 @@
+           <div class="video-grid-item" onclick="selectLibraryClip('${clip.filename}', '${escapeHtml(clip.title)}')">
+             <video class="video-grid-preview" src="${clip.url}" muted loop onmouseover="this.play()" onmouseout="this.pause()"></video>
+             <div style="font-size: 0.8rem; font-weight: 600; color: #FFF;">${escapeHtml(clip.title)}</div>
+-            <div style="font-size: 0.7rem; color: var(--primary);">Click to Assign</div>
++            <div style="font-size: 0.7rem; color: var(--primary);">${escapeHtml(clip.kind || 'video')} - click to assign</div>
+           </div>
+         `).join('');
+       } catch (err) {
+@@ -1562,6 +1593,7 @@
+       const sceneKey = `scene_${targetUploadScene}`;
+       // Map to server asset path or filename
+       customClips[sceneKey] = filename;
++      customClipPreviews[sceneKey] = `/api/video/asset/${encodeURIComponent(filename)}`;
+       sceneProviders[sceneKey] = 'curated';
+ 
+       const badge = document.getElementById(`broll-badge-${targetUploadScene}`);
+@@ -1573,6 +1605,7 @@
+         select.value = 'curated';
+       }
+       closeLibraryModal();
++      renderStoryboardUI(currentStoryboard);
+       showToast(`Assigned "${title}" to Scene ${targetUploadScene}!`, 'success');
+     }
+ 
+@@ -1677,6 +1710,7 @@
+         return;
+       }
+ 
++      if (pendingUploads > 0) { showToast('Wait for clip uploads to finish.', 'warning'); return; }
+       const voiceId = document.getElementById('voice-select').value;
+       const musicTrack = document.getElementById('music-select').value;
+       const subStyle = document.getElementById('subtitle-style-select') ? document.getElementById('subtitle-style-select').value : 'hormozi_gold';
+@@ -1688,24 +1722,28 @@
+ 
+       renderBtn.disabled = true;
+       synthBtn.disabled = true;
+-      renderBtn.innerHTML = '<span>⏳ Rendering Video (Takes ~5-8s)...</span>';
++      renderBtn.innerHTML = '<span>Checking footage and rendering...</span>';
+       progressBox.style.display = 'block';
+       updateProgress(10, 'Submitting generation request to compositor...');
+ 
+       try {
++        const payload = {
++          storyboard: currentStoryboard, voice_id: voiceId,
++          music_track: musicTrack === 'none' ? null : musicTrack,
++          custom_clips: customClips, scene_providers: sceneProviders,
++          subtitle_style: subStyle, subtitle_position: subPos, subtitle_format: subFormat,
++          allow_photo_motion: document.getElementById('allow-photo-motion').checked
++        };
++        const preflight = await fetch('/api/preflight', {
++          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
++        });
++        if (!preflight.ok) throw new Error(await preflight.text());
++        const readiness = await preflight.json();
++        document.getElementById('render-diagnostics').textContent =
++          [...(readiness.errors || []), ...(readiness.warnings || [])].join('\n');
++        if (!readiness.ready) throw new Error((readiness.errors || []).join(' | '));
+         const res = await fetch('/api/render-video', {
+-          method: 'POST',
+-          headers: {'Content-Type': 'application/json'},
+-          body: JSON.stringify({
+-            storyboard: currentStoryboard,
+-            voice_id: voiceId,
+-            music_track: musicTrack === 'none' ? null : musicTrack,
+-            custom_clips: customClips,
+-            scene_providers: sceneProviders,
+-            subtitle_style: subStyle,
+-            subtitle_position: subPos,
+-            subtitle_format: subFormat
+-          })
++          method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)
+         });
+ 
+         if (!res.ok) throw new Error(await res.text());
+@@ -1769,9 +1807,11 @@
+ 
+             const dlBtn = document.getElementById('btn-download');
+             dlBtn.href = job.video_url;
++            dlBtn.removeAttribute('aria-disabled');
+             dlBtn.download = `shortsgenius_reel_${jobId}.mp4`;
+ 
+-            showToast('🎉 Reel rendered in 1080x1920 with real video & captions!', 'success');
++            showToast('MP4 rendered and validated. Review it before publishing.', 'success');
++            document.getElementById('render-diagnostics').textContent = (job.visual_report || []).map(item => `Scene ${item.scene_number}: ${item.provider} - ${item.status}${item.file ? ' (' + item.file + ')' : ''}${item.reason ? ': ' + item.reason : ''}`).join('\n');
+             fetchRecentReels();
+           } else if (job.status === 'FAILED') {
+             clearInterval(pollInterval);
+@@ -1782,6 +1822,7 @@
+             renderBtn.innerHTML = '<span>🚀 Render 1080x1920 Instagram Reel</span>';
+             progressBox.style.display = 'none';
+             showToast('Rendering failed: ' + job.error, 'error');
++            document.getElementById('render-diagnostics').textContent = job.error || 'Unknown rendering error';
+           }
+         } catch (err) {
+           console.error(err);
+@@ -1800,6 +1841,7 @@
+             player.load();
+             const dlBtn = document.getElementById('btn-download');
+             dlBtn.href = data.video_url;
++            dlBtn.removeAttribute('aria-disabled');
+             dlBtn.download = data.filename;
+           }
+         }
+@@ -1807,6 +1849,9 @@
+     }
+ 
+     window.addEventListener('DOMContentLoaded', async () => {
++      document.getElementById('main-video-player').addEventListener('error', () => {
++        document.getElementById('render-diagnostics').textContent = 'Video playback failed. Check the final MP4 and the job logs.';
++      });
+       checkApiSettings();
+       const activeJob = localStorage.getItem('activeShortsJob');
+       if (activeJob) {
+--- original/tools/doctor.py
++++ repaired/tools/doctor.py
+@@ -0,0 +1,54 @@
++"""Local diagnostics. Prints key presence only, never credential values."""
++import importlib.metadata
++import json
++import os
++import platform
++import sys
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT))
++from backend import config
++from backend.services.media_tools import check_tools, probe_media, MediaError
++from backend.services.video_providers import source_kind
++
++
++def main():
++    report = {"python": sys.version.split()[0], "platform": platform.platform(),
++              "project_root": str(ROOT), "keys": {
++                  "pexels_present": bool(os.getenv("PEXELS_API_KEY", "")),
++                  "gemini_present": bool(os.getenv("GEMINI_API_KEY", ""))},
++              "media_tools": {}, "packages": {}, "library": [], "warnings": []}
++    ok = True
++    try:
++        report["media_tools"] = check_tools()
++    except MediaError as exc:
++        ok = False
++        report["media_tools"] = {"ok": False, "error": str(exc)}
++    for name in ("fastapi", "uvicorn", "edge-tts", "pydantic", "python-multipart"):
++        try:
++            report["packages"][name] = importlib.metadata.version(name)
++        except importlib.metadata.PackageNotFoundError:
++            report["packages"][name] = "MISSING"
++            ok = False
++    for path in sorted(config.VIDEOS_DIR.glob("*.mp4")):
++        row = {"file": path.name, "kind": source_kind(path)}
++        if report["media_tools"].get("ok"):
++            try:
++                info = probe_media(path, require_video=True, decode=True)
++                row.update(valid=True, duration=info["duration"], width=info["video"]["width"], height=info["video"]["height"])
++            except MediaError as exc:
++                row.update(valid=False, error=str(exc))
++        report["library"].append(row)
++    if not report["keys"]["pexels_present"]:
++        report["warnings"].append("No Pexels key. Upload clips or use a relevant local footage library.")
++    if not any(item["kind"] != "photo_motion" for item in report["library"]):
++        report["warnings"].append("Bundled library has only photo-animation demos. They require explicit opt-in.")
++    report["warnings"].append("No online provider connectivity was tested by this diagnostic.")
++    report["ok"] = ok
++    print(json.dumps(report, indent=2))
++    return 0 if ok else 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+--- original/tools/smoke_test.py
++++ repaired/tools/smoke_test.py
+@@ -0,0 +1,42 @@
++"""Render three seconds of a local clip + captions + silent audio; no API calls."""
++import argparse
++import sys
++import uuid
++from pathlib import Path
++
++ROOT = Path(__file__).resolve().parents[1]
++sys.path.insert(0, str(ROOT))
++from backend.config import OUTPUT_DIR
++from backend.services.media_tools import executable, run_checked, validate_final
++from backend.services.video_compositor import compose_final_video
++
++
++def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument("--clip", type=Path, required=True, help="Existing local MP4/MOV/WEBM/MKV")
++    args = parser.parse_args()
++    clip = args.clip.expanduser().resolve()
++    if not clip.is_file():
++        parser.error("--clip must point to an existing video")
++    job = "smoke_" + uuid.uuid4().hex[:8]
++    audio = OUTPUT_DIR / f"{job}.wav"
++    run_checked([executable("ffmpeg"), "-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i",
++                 "anullsrc=r=48000:cl=stereo", "-t", "3", str(audio)])
++    try:
++        words = [{"word": word, "start": i * 0.6, "end": (i + 1) * 0.6}
++                 for i, word in enumerate("OFFLINE VIDEO LAYER CHECK PASSED".split())]
++        final = compose_final_video(
++            [{"scene_number": 1, "narration": "Offline video layer check passed",
++              "roman_subtitles": "Offline video layer check passed"}],
++            [{"audio_path": str(audio), "words": words, "duration": 3}],
++            [str(clip)], project_id=job)
++        info = validate_final(final, expected_duration=3, full_decode=True)
++        print(f"PASS: {final}")
++        print(f"1080x1920, 30 fps, video + silent diagnostic audio, {info['duration']:.3f}s")
++        print("This tests rendering only, not Edge-TTS or stock/AI APIs.")
++    finally:
++        audio.unlink(missing_ok=True)
++
++
++if __name__ == "__main__":
++    main()
+--- original/tests/test_repair.py
++++ repaired/tests/test_repair.py
+@@ -0,0 +1,332 @@
++"""Offline regressions: real FFmpeg, with mocked external speech/stock services."""
++import asyncio
++import json
++import shutil
++import sys
++import subprocess
++from types import SimpleNamespace
++import pytest
++from fastapi.testclient import TestClient
++from backend import app as api
++from backend.services import media_tools as media
++from backend.services import video_compositor as compositor
++from backend.services import video_providers as providers
++from backend.services import visual_engine, voice_engine, subtitle_engine
++
++
++@pytest.fixture(scope="session")
++def samples(tmp_path_factory):
++    root = tmp_path_factory.mktemp("media")
++    ff = media.executable("ffmpeg")
++    for name, rate in [("clip.mp4", 24), ("clip.mkv", 25)]:
++        media.run_checked([ff, "-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i",
++            f"testsrc2=size=320x180:rate={rate}", "-t", "1.2", "-c:v", "libx264",
++            "-threads", "1", "-pix_fmt", "yuv420p", str(root / name)])
++    for name in ("voice.wav", "voice.mp3", "music.mp3", "audio_only.mp4"):
++        media.run_checked([ff, "-nostdin", "-y", "-v", "error", "-f", "lavfi", "-i",
++            "sine=frequency=440:sample_rate=44100", "-t", "1.2", str(root / name)])
++    return root
++
++
++@pytest.fixture
++def work(tmp_path, monkeypatch):
++    out, videos, music = tmp_path / "output", tmp_path / "videos", tmp_path / "music"
++    uploads = out / "uploads"
++    for path in (out, videos, music, uploads): path.mkdir(parents=True, exist_ok=True)
++    for module in (api, compositor, visual_engine, voice_engine, providers):
++        monkeypatch.setattr(module, "OUTPUT_DIR", out, raising=False)
++    for module in (api, providers):
++        monkeypatch.setattr(module, "UPLOADS_DIR", uploads)
++        monkeypatch.setattr(module, "VIDEOS_DIR", videos)
++    monkeypatch.setattr(compositor, "MUSIC_DIR", music)
++    monkeypatch.setenv("PEXELS_API_KEY", "")
++    monkeypatch.setenv("GEMINI_API_KEY", "")
++    api.JOBS.clear()
++    monkeypatch.setattr(api, "RENDER_LOCK", asyncio.Semaphore(1))
++    return SimpleNamespace(root=tmp_path, out=out, videos=videos, music=music, uploads=uploads)
++
++
++def scene(number=1, keyword="gym workout"):
++    return {"scene_number": number, "narration": "Visible footage behind captions",
++            "roman_subtitles": "Visible footage behind captions", "search_keyword": keyword,
++            "visual_prompt": keyword, "duration_estimate_sec": 1.2}
++
++
++def voice(samples):
++    return {"audio_path": str(samples / "voice.wav"), "duration": 1.2, "words": []}
++
++
++def test_valid_media_probe(samples):
++    info = media.probe_media(samples / "clip.mp4", require_video=True, decode=True)
++    assert info["video"]["width"] == 320 and info["duration"] > 1
++
++
++def test_corrupt_mp4_rejected(work):
++    bad = work.uploads / "fake.mp4"
++    bad.write_bytes(b"not a video" * 3000)
++    with pytest.raises(media.MediaError): media.probe_media(bad, require_video=True)
++
++
++def test_audio_only_mp4_is_not_footage(samples):
++    with pytest.raises(media.MediaError, match="No video stream"):
++        media.probe_media(samples / "audio_only.mp4", require_video=True)
++
++
++def test_empty_scenes_rejected(work):
++    with pytest.raises(media.MediaError, match="equal and non-zero"):
++        compositor.compose_final_video([], [], [], project_id="empty")
++
++
++def test_mismatched_scene_lists_rejected(work, samples):
++    with pytest.raises(media.MediaError, match="equal and non-zero"):
++        compositor.compose_final_video([scene(), scene(2)], [voice(samples)],
++            [str(samples / "clip.mp4")], project_id="mismatch")
++    assert not (work.out / "mismatch_final.mp4").exists()
++
++
++def test_missing_input_cannot_return_success(work, samples):
++    with pytest.raises(media.MediaError, match="Missing or empty"):
++        compositor.compose_final_video([scene()], [voice(samples)],
++            [str(work.root / "missing.mp4")], project_id="missing")
++    assert not (work.out / "missing_final.mp4").exists()
++
++
++def test_mkv_and_mixed_fps_get_normalized(work, samples):
++    output = compositor.compose_final_video([scene(), scene(2)], [voice(samples), voice(samples)],
++        [str(samples / "clip.mp4"), str(samples / "clip.mkv")], project_id="mixed")
++    info = media.validate_final(output, 2.4, full_decode=True)
++    assert info["video"]["r_frame_rate"] == "30/1"
++    assert info["audio"]["sample_rate"] == "48000" and info["audio"]["channels"] == 2
++    manifest = json.loads((work.out / "jobs/mixed/render_manifest.json").read_text())
++    assert manifest["validated"] and len(manifest["scenes"]) == 2
++    assert (work.out / "jobs/mixed/ffmpeg.log").exists()
++    # Inspect the upper image region, excluding the lower caption area.
++    frames = []
++    for timestamp in ("0.2", "0.8"):
++        decoded = subprocess.run([media.executable("ffmpeg"), "-v", "error", "-ss", timestamp,
++            "-i", str(output), "-frames:v", "1", "-vf", "crop=1080:1000:0:0,scale=64:64,format=rgb24",
++            "-f", "rawvideo", "-"], capture_output=True, check=True, timeout=30)
++        frames.append(decoded.stdout)
++    assert len(frames[0]) == 64 * 64 * 3
++    assert max(frames[0]) - min(frames[0]) > 100
++    assert sum(abs(a-b) for a, b in zip(frames[0], frames[1])) / len(frames[0]) > 0.5
++
++
++def test_music_mix_keeps_video_and_audio(work, samples):
++    shutil.copy2(samples / "music.mp3", work.music / "test.mp3")
++    output = compositor.compose_final_video([scene()], [voice(samples)], [str(samples / "clip.mp4")],
++        music_track_name="test", project_id="music")
++    media.validate_final(output, 1.2, full_decode=True)
++
++
++def test_command_error_is_raised_and_logged(work):
++    log = work.root / "bad.log"
++    with pytest.raises(media.MediaError):
++        media.run_checked([media.executable("ffmpeg"), "-no_such_option_123"], log_path=log)
++    assert "no_such_option_123" in log.read_text()
++
++
++def test_custom_path_cannot_escape_storage(work, samples):
++    with pytest.raises(media.MediaError, match="must be uploaded"):
++        providers.resolve_custom_clip(str(samples / "clip.mp4"))
++    with pytest.raises(media.MediaError): providers.resolve_custom_clip("../secret.mp4")
++
++
++def test_manual_upload_wins(work, samples):
++    target = work.uploads / "owned.mp4"
++    shutil.copy2(samples / "clip.mp4", target)
++    path, name = providers.ROUTER.resolve_scene_clip(scene(), work.out / "unused.mp4", 0,
++        preferred_provider="curated", custom_clips={"scene_1": target.name})
++    assert path == target and name == "User-selected video"
++
++
++def test_missing_manual_upload_cannot_fallback(work):
++    with pytest.raises(media.MediaError, match="missing"):
++        providers.ROUTER.resolve_scene_clip(scene(), work.out / "unused.mp4", 0,
++            custom_clips={"scene_1": "gone.mp4"})
++
++
++def test_no_footage_does_not_generate_background(work):
++    with pytest.raises(media.MediaError, match="no usable footage"):
++        providers.ROUTER.resolve_scene_clip(scene(), work.out / "unused.mp4", 0)
++    assert not (work.out / "unused.mp4").exists()
++
++
++def test_unrelated_library_clips_not_selected(work, samples):
++    shutil.copy2(samples / "clip.mp4", work.videos / "space_cosmos.mp4")
++    assert providers.CuratedStockProvider().generate_clip(scene(), work.out / "unused.mp4", {}) is None
++
++
++def test_photo_demo_requires_permission(work, samples):
++    target = work.videos / "facts_cosmos.mp4"
++    shutil.copy2(samples / "clip.mp4", target)
++    with pytest.raises(media.MediaError, match="photo-animation demo"):
++        providers.ROUTER.resolve_scene_clip(scene(), work.out / "unused.mp4", 0,
++            custom_clips={"scene_1": target.name})
++    path, _ = providers.ROUTER.resolve_scene_clip(scene(), work.out / "unused.mp4", 0,
++        custom_clips={"scene_1": target.name}, allow_photo_motion=True)
++    assert path == target
++
++
++def test_ai_video_not_falsely_available():
++    assert not providers.GenerativeAIVideoProvider().is_available()
++
++
++def test_gradient_demo_is_explicit_and_30fps(work):
++    provider = providers.ProceduralMotionProvider()
++    with pytest.raises(media.MediaError): provider.generate_clip(scene(), work.out / "gradient.mp4", {})
++    path = provider.generate_clip(scene(), work.out / "gradient.mp4", {"allow_photo_motion": True})
++    assert media.probe_media(path, require_video=True)["video"]["r_frame_rate"] == "30/1"
++
++
++def test_preflight_prevents_empty_footage_job(work):
++    with TestClient(api.app) as client:
++        payload = {"storyboard": {"scenes": [scene()]}}
++        result = client.post("/api/preflight", json=payload)
++        assert result.status_code == 200 and not result.json()["ready"]
++        assert client.post("/api/render-video", json=payload).status_code == 400
++        assert not api.JOBS
++
++
++def test_mkv_upload_and_browser_preview(work, samples):
++    with TestClient(api.app) as client:
++        with (samples / "clip.mkv").open("rb") as handle:
++            response = client.post("/api/upload-scene-video", data={"scene_number": "1"},
++                files={"file": ("clip.mkv", handle, "video/x-matroska")})
++        assert response.status_code == 200, response.text
++        data = response.json()
++        assert "/" not in data["asset_id"] and (work.uploads / data["asset_id"]).exists()
++        preview = client.get(data["preview_url"], headers={"Range": "bytes=0-99"})
++        assert preview.status_code in (200, 206) and preview.headers["content-type"] == "video/mp4"
++
++
++def test_corrupt_and_unsupported_uploads_rejected(work):
++    with TestClient(api.app) as client:
++        for name in ("fake.mp4", "fake.exe"):
++            response = client.post("/api/upload-scene-video", data={"scene_number": "1"},
++                files={"file": (name, b"invalid" * 100, "video/mp4")})
++            assert response.status_code == 400
++    assert not list(work.uploads.iterdir())
++
++
++def test_upload_size_limit_removes_partial(work, monkeypatch):
++    monkeypatch.setattr(api, "MAX_MEDIA_BYTES", 100)
++    with TestClient(api.app) as client:
++        response = client.post("/api/upload-scene-video", data={"scene_number": "1"},
++            files={"file": ("large.mp4", b"x" * 101, "video/mp4")})
++        assert response.status_code == 413
++    assert not list(work.uploads.iterdir())
++
++
++def test_no_invented_demo_video_url(work):
++    with TestClient(api.app) as client:
++        assert client.get("/api/latest-video").json()["video_url"] is None
++
++
++def test_roman_timing_is_bounded_without_overlap():
++    words = subtitle_engine.align_roman_words([], "One two three four", duration=1.2)
++    assert words[0]["start"] == 0 and words[-1]["end"] == pytest.approx(1.2)
++    assert all(a["end"] <= b["start"] for a, b in zip(words, words[1:]))
++    assert subtitle_engine._format_ass_time(59.999) == "0:01:00.00"
++
++
++def test_ass_overrides_from_user_text_are_sanitized(work):
++    path = work.root / "sub.ass"
++    subtitle_engine.build_karaoke_ass_script([], "hello", 1.2, path, roman_text=r"hello {\alpha&HFF&} world")
++    assert r"{\ALPHA" not in path.read_text()
++
++
++def test_word_boundaries_requested_and_audio_probed(work, samples, monkeypatch):
++    seen = {}
++    class FakeCommunicate:
++        def __init__(self, text, **kwargs): seen.update(kwargs)
++        async def stream(self):
++            yield {"type": "audio", "data": (samples / "voice.mp3").read_bytes()}
++            yield {"type": "WordBoundary", "text": "Hello", "offset": 1_000_000, "duration": 3_000_000}
++    monkeypatch.setitem(sys.modules, "edge_tts", SimpleNamespace(Communicate=FakeCommunicate))
++    path, words, duration, srt = asyncio.run(voice_engine.synthesize_voice_with_timestamps("Hello"))
++    assert seen["boundary"] == "WordBoundary" and words[0].start_time == pytest.approx(0.1)
++    assert words[0].end_time == pytest.approx(0.4) and path.exists() and duration > 1 and "Hello" in srt
++
++
++def test_end_to_end_api_with_mock_speech_and_restart(work, samples, monkeypatch):
++    target = work.uploads / "end_to_end.mp4"
++    shutil.copy2(samples / "clip.mp4", target)
++    async def offline_voices(scenes, voice_id, project_id): return [voice(samples) for _ in scenes]
++    monkeypatch.setattr(api, "_generate_scene_voices", offline_voices)
++    with TestClient(api.app) as client:
++        response = client.post("/api/render-video", json={"storyboard": {"scenes": [scene()]},
++            "music_track": None, "custom_clips": {"scene_1": target.name}})
++        assert response.status_code == 200, response.text
++        job_id = response.json()["job_id"]
++        job = client.get(f"/api/job/{job_id}").json()
++        assert job["status"] == "COMPLETED", job
++        assert client.get(job["video_url"]).status_code == 200
++        assert job["visual_report"][0]["provider"] == "upload"
++        api.JOBS.clear()
++        assert client.get(f"/api/job/{job_id}").json()["status"] == "COMPLETED"
++
++
++def test_compositor_error_becomes_failed_job(work, samples, monkeypatch):
++    target = work.uploads / "error_test.mp4"
++    shutil.copy2(samples / "clip.mp4", target)
++    async def offline_voices(scenes, voice_id, project_id): return [voice(samples)]
++    def fail(**kwargs): raise media.MediaError("Simulated FFmpeg failure")
++    monkeypatch.setattr(api, "_generate_scene_voices", offline_voices)
++    monkeypatch.setattr(api, "compose_final_video", fail)
++    with TestClient(api.app) as client:
++        result = client.post("/api/render-video", json={"storyboard": {"scenes": [scene()]},
++            "music_track": None, "custom_clips": {"scene_1": target.name}})
++        job = client.get(f"/api/job/{result.json()['job_id']}").json()
++        assert job["status"] == "FAILED" and job["video_url"] is None and "Simulated" in job["error"]
++
++
++def test_pexels_current_endpoint_download_and_provenance(work, samples, monkeypatch):
++    calls = []
++    class Response:
++        status_code = 200
++        def __enter__(self): return self
++        def __exit__(self, *args): return False
++        def raise_for_status(self): pass
++        def json(self):
++            return {"videos": [{"id": 123, "url": "https://www.pexels.com/video/test-123/",
++                "user": {"name": "Test Creator"}, "video_files": [{"file_type": "video/mp4",
++                    "width": 320, "height": 180, "link": "https://videos.pexels.com/test.mp4"}]}]}
++        def iter_content(self, size): yield (samples / "clip.mp4").read_bytes()
++    def get(url, **kwargs):
++        calls.append(url)
++        return Response()
++    monkeypatch.setattr(providers.requests, "get", get)
++    path = providers.PexelsVideoProvider().generate_clip(scene(), work.out / "download.mp4", {"pexels_api_key": "test-key"})
++    assert calls[0] == "https://api.pexels.com/v1/videos/search"
++    assert path.exists() and path.with_suffix(".source.json").exists()
++
++
++def test_pexels_rate_limit_not_hidden(work, monkeypatch):
++    class Response:
++        status_code = 429
++        def __enter__(self): return self
++        def __exit__(self, *args): return False
++    monkeypatch.setattr(providers.requests, "get", lambda *args, **kwargs: Response())
++    with pytest.raises(media.MediaError, match="rate limit"):
++        providers.PexelsVideoProvider().generate_clip(scene(), work.out / "x.mp4", {"pexels_api_key": "test-key"})
++
++
++def test_full_range_upload_is_normalized_to_limited_yuv420p(work, samples):
++    source = work.root / "full_range.mp4"
++    media.run_checked([media.executable("ffmpeg"), "-nostdin", "-y", "-v", "error",
++        "-i", str(samples / "clip.mp4"), "-vf", "scale=out_range=pc",
++        "-c:v", "libx264", "-threads", "1", "-pix_fmt", "yuvj420p", "-color_range", "pc", str(source)])
++    assert media.probe_media(source, require_video=True)["video"]["color_range"] == "pc"
++    output = compositor.compose_final_video([scene()], [voice(samples)], [str(source)],
++        project_id="full_range")
++    info = media.validate_final(output, 1.2, full_decode=True)
++    assert info["video"]["pix_fmt"] == "yuv420p"
++    assert info["video"].get("color_range", "tv") != "pc"
++    with TestClient(api.app) as client:
++        with source.open("rb") as handle:
++            response = client.post("/api/upload-scene-video", data={"scene_number": "1"},
++                files={"file": ("full_range.mp4", handle, "video/mp4")})
++        assert response.status_code == 200, response.text
++        preview = work.uploads / response.json()["preview_url"].split("/")[-1]
++        assert media.probe_media(preview, require_video=True)["video"]["pix_fmt"] == "yuv420p"
+--- original/backend/services/visual_engine.py
++++ repaired/backend/services/visual_engine.py
+@@ -1,58 +1,30 @@
+-import os
++import json
+ from pathlib import Path
+-from typing import List, Dict, Any, Optional, Set
+-
+-from ..config import (
+-    VIDEO_WIDTH,
+-    VIDEO_HEIGHT,
+-    OUTPUT_DIR,
+-    VIDEOS_DIR,
+-    PEXELS_API_KEY
+-)
+-from .video_providers import ROUTER, VideoProviderRouter
++from typing import Any, Optional
++from ..config import OUTPUT_DIR
++from .video_providers import ROUTER
++from .media_tools import validate_job_id
+ 
+ 
+-def generate_scene_visuals(
+-    scenes: List[Dict[str, Any]],
+-    project_id: str = "demo",
+-    pexels_api_key: Optional[str] = None,
+-    custom_clips: Optional[Dict[str, str]] = None,
+-    scene_providers: Optional[Dict[str, str]] = None
+-) -> List[str]:
+-    """
+-    Phase 2: Master Multi-Model Scene Visual Dispatcher.
+-    Dispatches each scene through the pluggable VideoProviderRouter.
+-    Automatically applies priority routing and per-scene provider preferences:
+-      - Custom user-uploaded/attached clip
+-      - Preferred provider per scene (if designated in scene_providers)
+-      - Circuit-breaker cascading fallback chain:
+-          1. Live Pexels Real Stock Vertical Video (1080x1920 MP4)
+-          2. Curated Niche Stock Library (assets/videos/) with intelligent clip rotation
+-          3. Fast Generative AI Video Generator (neural visual + camera motion)
+-          4. Pexels High-Res Photo with continuous camera ZoomPan
+-          5. Procedural Kinetic Motion Synthesizer (guaranteed failsafe)
+-    """
+-    visual_paths = []
+-    custom_clips = custom_clips or {}
+-    scene_providers = scene_providers or {}
+-    used_clips: Set[str] = set()
+-
+-    for idx, scene in enumerate(scenes):
+-        scene_num = scene.get("scene_number", idx + 1)
+-        scene_key = f"scene_{scene_num}"
+-        preferred = scene_providers.get(scene_key) or scene.get("provider")
+-
+-        out_video_path = OUTPUT_DIR / f"{project_id}_broll_{idx + 1}.mp4"
+-        clip_path, provider_used = ROUTER.resolve_scene_clip(
+-            scene=scene,
+-            output_path=out_video_path,
+-            scene_index=idx,
+-            preferred_provider=preferred,
+-            custom_clips=custom_clips,
+-            pexels_api_key=pexels_api_key,
+-            used_clips=used_clips
+-        )
+-        visual_paths.append(str(clip_path))
+-        print(f"[VisualEngine] Scene {idx + 1} [{scene.get('scene_category', 'scene')}] dispatched -> [{provider_used}]: {clip_path.name}")
+-
+-    return visual_paths
++def generate_scene_visuals(scenes: list[dict[str, Any]], project_id: str = "demo",
++                           pexels_api_key: Optional[str] = None,
++                           custom_clips: Optional[dict[str, str]] = None,
++                           scene_providers: Optional[dict[str, str]] = None,
++                           allow_photo_motion: bool = False) -> list[str]:
++    validate_job_id(project_id)
++    paths, trace, used = [], [], set()
++    work = OUTPUT_DIR / "jobs" / project_id
++    work.mkdir(parents=True, exist_ok=True)
++    try:
++        for index, scene in enumerate(scenes):
++            key = f"scene_{scene.get('scene_number', index + 1)}"
++            path, provider = ROUTER.resolve_scene_clip(
++                scene, work / f"broll_{index + 1:03d}.mp4", index,
++                preferred_provider=(scene_providers or {}).get(key) or scene.get("provider"),
++                custom_clips=custom_clips, pexels_api_key=pexels_api_key, used_clips=used,
++                allow_photo_motion=allow_photo_motion, trace=trace,
++            )
++            paths.append(str(path))
++    finally:
++        (work / "visual_report.json").write_text(json.dumps(trace, indent=2), encoding="utf-8")
++    return paths
+--- original/backend/services/voice_engine.py
++++ repaired/backend/services/voice_engine.py
+@@ -1,125 +1,88 @@
++"""Speech generation with actual word boundaries and probed audio duration."""
++from __future__ import annotations
++
+ import asyncio
++import importlib
+ import re
+ from pathlib import Path
+-from typing import List, Dict, Any, Tuple
+-import edge_tts
+-from moviepy import AudioFileClip
++from typing import Any
+ from ..config import DEFAULT_VOICE, OUTPUT_DIR
++from .media_tools import MediaError, probe_media, safe_child, validate_job_id
+ 
+ 
+ class WordTimestamp:
+     def __init__(self, word: str, start_time: float, end_time: float):
+-        self.word = word
+-        self.start_time = start_time
+-        self.end_time = end_time
++        self.word, self.start_time, self.end_time = word, start_time, end_time
+ 
+-    def to_dict(self) -> Dict[str, Any]:
+-        return {
+-            "word": self.word,
+-            "start": round(self.start_time, 3),
+-            "end": round(self.end_time, 3),
+-        }
++    def to_dict(self) -> dict[str, Any]:
++        return {"word": self.word, "start": round(self.start_time, 3), "end": round(self.end_time, 3)}
+ 
+ 
+-async def synthesize_voice_with_timestamps(
+-    text: str,
+-    voice: str = DEFAULT_VOICE,
+-    output_filename: str = "voiceover.mp3"
+-) -> Tuple[Path, List[WordTimestamp], float, str]:
+-    """
+-    Synthesizes speech using edge-tts and extracts exact sentence & word alignment.
+-    Returns:
+-        audio_path (Path): Path to saved MP3 file.
+-        words (List[WordTimestamp]): Exact start and end seconds for each spoken word.
+-        total_duration (float): Total audio duration in seconds.
+-        srt_content (str): Formatted SRT subtitle track.
+-    """
+-    output_path = OUTPUT_DIR / output_filename
+-    communicate = edge_tts.Communicate(text, voice=voice, rate="+5%")
+-    submaker = edge_tts.SubMaker()
+-
+-    audio_data = bytearray()
+-
+-    async for chunk in communicate.stream():
+-        chunk_type = chunk.get("type")
+-        if chunk_type == "audio":
+-            audio_data.extend(chunk.get("data", b""))
+-        elif chunk_type in ("WordBoundary", "SentenceBoundary"):
+-            try:
+-                submaker.feed(chunk)
+-            except Exception:
+-                pass
+-
+-    with open(output_path, "wb") as f:
+-        f.write(audio_data)
+-
+-    # Get exact duration from audio file
+-    total_duration = 0.0
+-    try:
+-        with AudioFileClip(str(output_path)) as audio_clip:
+-            total_duration = float(audio_clip.duration)
+-    except Exception:
+-        if submaker.cues:
+-            total_duration = submaker.cues[-1].end.total_seconds()
+-
+-    # Generate fine-grained word timestamps
+-    words: List[WordTimestamp] = []
+-    for cue in submaker.cues:
+-        cue_text = cue.content.strip()
+-        cue_start = cue.start.total_seconds()
+-        cue_end = min(total_duration, cue.end.total_seconds())
+-        cue_duration = max(0.1, cue_end - cue_start)
+-
+-        # Split sentence into words and distribute timing proportionally
+-        raw_words = [w for w in re.split(r"\s+", cue_text) if w]
+-        if not raw_words:
+-            continue
+-
+-        # Total characters for proportional weighting
+-        total_chars = sum(len(w) for w in raw_words) or len(raw_words)
+-        curr_time = cue_start
+-
+-        for w in raw_words:
+-            word_fraction = len(w) / total_chars
+-            w_duration = cue_duration * word_fraction
+-            w_start = curr_time
+-            w_end = min(total_duration, curr_time + w_duration)
+-            words.append(WordTimestamp(w, w_start, w_end))
+-            curr_time = w_end
+-
+-    srt_content = submaker.get_srt()
+-    return output_path, words, total_duration, srt_content
++def _srt_time(seconds: float) -> str:
++    milliseconds = max(0, round(seconds * 1000))
++    hours, remainder = divmod(milliseconds, 3_600_000)
++    minutes, remainder = divmod(remainder, 60_000)
++    seconds, milliseconds = divmod(remainder, 1000)
++    return f"{hours:02d}:{minutes:02d}:{seconds:02d},{milliseconds:03d}"
+ 
+ 
+-def generate_scene_voices_sync(
+-    scenes: List[Dict[str, Any]],
+-    voice: str = DEFAULT_VOICE,
+-    project_id: str = "demo"
+-) -> List[Dict[str, Any]]:
+-    """
+-    Synchronous wrapper to synthesize audio for each scene in a storyboard.
+-    """
++async def synthesize_voice_with_timestamps(text: str, voice: str = DEFAULT_VOICE,
++                                          output_filename: str = "voiceover.mp3"):
++    if not text.strip():
++        raise MediaError("Narration cannot be empty.")
++    try:
++        edge_tts = importlib.import_module("edge_tts")
++    except ImportError as exc:
++        raise MediaError("edge-tts is missing. Install requirements.txt in your virtual environment.") from exc
++    path = safe_child(OUTPUT_DIR, output_filename)
++    partial = path.with_suffix(".part.mp3")
++    boundaries = []
++    # Newer edge-tts defaults to sentence boundaries unless this is requested.
++    communicator = edge_tts.Communicate(
++        text, voice=voice, rate="+5%", boundary="WordBoundary",
++        connect_timeout=10, receive_timeout=45,
++    )
++
++    async def receive():
++        with partial.open("wb") as audio:
++            async for chunk in communicator.stream():
++                if chunk.get("type") == "audio":
++                    audio.write(chunk.get("data", b""))
++                elif chunk.get("type") == "WordBoundary":
++                    start = float(chunk.get("offset", 0)) / 10_000_000
++                    end = start + float(chunk.get("duration", 0)) / 10_000_000
++                    boundaries.append((str(chunk.get("text", "")), start, end))
++
++    try:
++        await asyncio.wait_for(receive(), timeout=150)
++        metadata = await asyncio.to_thread(probe_media, partial, require_audio=True, decode=True)
++        duration = metadata["duration"]
++        words = [WordTimestamp(word, max(0, start), min(duration, end))
++                 for word, start, end in boundaries if word and start < duration and end > start]
++        # Do not advertise guessed boundaries as exact. The subtitle engine can
++        # distribute text over the measured duration when no boundaries arrive.
++        partial.replace(path)
++    except BaseException:
++        partial.unlink(missing_ok=True)
++        raise
++    srt = "\n\n".join(
++        f"{index}\n{_srt_time(word.start_time)} --> {_srt_time(word.end_time)}\n{word.word}"
++        for index, word in enumerate(words, 1)
++    )
++    return path, words, duration, srt
++
++
++def generate_scene_voices_sync(scenes, voice=DEFAULT_VOICE, project_id="demo"):
+     return asyncio.run(_generate_scene_voices(scenes, voice, project_id))
+ 
+ 
+-async def _generate_scene_voices(
+-    scenes: List[Dict[str, Any]],
+-    voice: str = DEFAULT_VOICE,
+-    project_id: str = "demo"
+-) -> List[Dict[str, Any]]:
+-    results = []
+-    for idx, scene in enumerate(scenes):
+-        fname = f"{project_id}_scene_{idx + 1}.mp3"
+-        audio_path, words, duration, srt = await synthesize_voice_with_timestamps(
+-            text=scene["narration"],
+-            voice=voice,
+-            output_filename=fname
+-        )
+-        results.append({
+-            "scene_number": idx + 1,
+-            "audio_path": str(audio_path),
+-            "words": [w.to_dict() for w in words],
+-            "duration": duration or scene.get("duration_estimate_sec", 4.0),
+-            "srt": srt
+-        })
+-    return results
++async def _generate_scene_voices(scenes, voice=DEFAULT_VOICE, project_id="demo"):
++    validate_job_id(project_id)
++    result = []
++    for index, scene in enumerate(scenes, 1):
++        path, words, duration, srt = await synthesize_voice_with_timestamps(
++            scene["narration"], voice, f"{project_id}_scene_{index}.mp3")
++        result.append({"scene_number": scene.get("scene_number", index), "audio_path": str(path),
++                       "words": [word.to_dict() for word in words], "duration": duration,
++                       "srt": srt, "timing_source": "word_boundaries" if words else "estimated"})
++    return result
+--- original/backend/services/script_generator.py
++++ repaired/backend/services/script_generator.py
+@@ -93,7 +93,7 @@
+     Generates a structured 6-8 scene plan with exact ~5-second boundaries,
+     native Telugu or English narration, English visual prompts, and Instagram kit.
+     """
+-    api_key = GEMINI_API_KEY or os.getenv("GEMINI_API_KEY", "")
++    api_key = os.getenv("GEMINI_API_KEY", GEMINI_API_KEY)
+     if api_key:
+         try:
+             return _generate_with_gemini(topic, duration_sec, niche, language, api_key)
+@@ -165,7 +165,10 @@
+     }}
+     """
+ 
+-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={api_key}"
++    model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
++    if not re.fullmatch(r"[A-Za-z0-9._-]+", model):
++        raise ValueError("Invalid GEMINI_MODEL setting")
++    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+     payload = {
+         "contents": [{"parts": [{"text": prompt}]}],
+         "generationConfig": {
+@@ -174,7 +177,7 @@
+         }
+     }
+ 
+-    res = requests.post(url, json=payload, timeout=40)
++    res = requests.post(url, json=payload, headers={"x-goog-api-key": api_key}, timeout=40)
+     res.raise_for_status()
+     raw = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+     clean = re.sub(r"^```json\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
+--- original/backend/services/video_compositor.py
++++ repaired/backend/services/video_compositor.py
+@@ -1,167 +1,128 @@
+-import os
+-import subprocess
++"""Validated, CPU-based FFmpeg renderer. A final filename means validation passed."""
++from __future__ import annotations
++
++import json
++import math
+ from pathlib import Path
+-from typing import List, Dict, Any, Optional
+-import imageio_ffmpeg
++from typing import Any, Optional
++from PIL import Image
++
+ from ..config import VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS, OUTPUT_DIR, MUSIC_DIR
+ from .subtitle_engine import build_karaoke_ass_script
++from .media_tools import (MediaError, check_tools, executable, probe_media,
++                          run_checked, safe_child, validate_final, validate_job_id)
+ 
+ 
+ def compose_final_video(
+-    scenes: List[Dict[str, Any]],
+-    voice_data: List[Dict[str, Any]],
+-    visual_paths: List[str],
+-    music_track_name: Optional[str] = None,
+-    project_id: str = "demo",
+-    subtitle_style: str = "hormozi_gold",
+-    subtitle_position: str = "bottom_safe",
+-    subtitle_format: str = "roman"
++    scenes: list[dict[str, Any]], voice_data: list[dict[str, Any]],
++    visual_paths: list[str], music_track_name: Optional[str] = None,
++    project_id: str = "demo", subtitle_style: str = "hormozi_gold",
++    subtitle_position: str = "bottom_safe", subtitle_format: str = "roman",
+ ) -> Path:
+-    """
+-    Phase 3: High-Performance Hardware Video Compositor with Active Karaoke Subtitles.
+-    Integrates dynamic word-by-word highlighted captions (.ass) using libass,
+-    supports real multi-model MP4 clips, cinematic photo motion, and audio ducking.
+-    Supports Option B Roman Telugu (Tenglish in bold Latin fonts) and Option A Native Telugu.
+-    """
+-    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+-    scene_mp4s = []
+-    ass_files = []
++    validate_job_id(project_id)
++    if not scenes or not (len(scenes) == len(voice_data) == len(visual_paths)):
++        raise MediaError("Scene, audio and visual counts must be equal and non-zero.")
++    check_tools()
++    ffmpeg = executable("ffmpeg")
++    work = (OUTPUT_DIR / "jobs" / project_id).resolve()
++    work.mkdir(parents=True, exist_ok=True)
++    log = work / "ffmpeg.log"
++    final = OUTPUT_DIR / f"{project_id}_final.mp4"
++    pending = work / "validated_pending.mp4"
++    manifest = {"job_id": project_id, "scenes": [], "validated": False}
++    clips: list[Path] = []
++    expected_duration = 0.0
+ 
+-    for idx, (scene, voice_info, img_path) in enumerate(zip(scenes, voice_data, visual_paths)):
+-        scene_mp4 = OUTPUT_DIR / f"{project_id}_scene_{idx + 1}.mp4"
+-        audio_path = Path(voice_info["audio_path"])
+-        words = voice_info.get("words", [])
+-        duration = float(voice_info.get("duration", 5.0))
+-        narration = scene.get("narration", "")
+-        roman_sub = scene.get("roman_subtitles")
++    for index, (scene, voice, visual) in enumerate(zip(scenes, voice_data, visual_paths), 1):
++        source = Path(visual).resolve()
++        audio = Path(voice["audio_path"]).resolve()
++        audio_info = probe_media(audio, require_audio=True, decode=True)
++        # Audio is the timeline source of truth, not an estimated script duration.
++        duration = math.ceil(audio_info["duration"] * VIDEO_FPS) / VIDEO_FPS
++        if duration > 180:
++            raise MediaError(f"Scene {index} narration exceeds the 180-second limit.")
++        is_image = source.suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")
++        if is_image:
++            try:
++                with Image.open(source) as image:
++                    image.verify()
++            except Exception as exc:
++                raise MediaError(f"Invalid image for scene {index}: {source.name}") from exc
++        else:
++            # Container/stream inspection also correctly handles .mkv uploads.
++            probe_media(source, require_video=True, decode=True)
++        subtitle = work / f"sub_{index:03d}.ass"
++        build_karaoke_ass_script(
++            words=voice.get("words", []), narration=scene.get("narration", ""),
++            duration=duration, output_path=subtitle, style_id=subtitle_style,
++            position_id=subtitle_position, roman_text=scene.get("roman_subtitles"),
++            script_format=subtitle_format,
++        )
++        vf = (f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase:in_range=auto:out_range=tv,"
++              f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},setsar=1")
++        if is_image:
++            vf += (f",zoompan=z='min(1+on*0.0015,1.2)':d=1:"
++                   f"x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':"
++                   f"s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={VIDEO_FPS}")
++        # A safe relative subtitle filename avoids Windows drive/space escaping bugs.
++        vf += f",fps={VIDEO_FPS},setpts=PTS-STARTPTS,format=yuv420p,ass='{subtitle.name}'"
++        scene_out = work / f"scene_{index:03d}.mp4"
++        command = [ffmpeg, "-nostdin", "-y", "-hide_banner", "-loglevel", "error",
++                   "-filter_threads", "2"]
++        command += ["-loop", "1"] if is_image else ["-stream_loop", "-1"]
++        command += ["-i", str(source), "-i", str(audio),
++                    "-map", "0:v:0", "-map", "1:a:0", "-t", str(duration),
++                    "-vf", vf, "-af", "aresample=48000,apad,asetpts=PTS-STARTPTS",
++                    "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
++                    "-threads", "2", "-pix_fmt", "yuv420p", "-color_range", "tv", "-r", str(VIDEO_FPS),
++                    "-video_track_timescale", "90000", "-c:a", "aac", "-b:a", "192k",
++                    "-ar", "48000", "-ac", "2", "-movflags", "+faststart", str(scene_out)]
++        run_checked(command, timeout=max(120, duration * 20), log_path=log, cwd=work)
++        validate_final(scene_out, duration, VIDEO_WIDTH, VIDEO_HEIGHT, VIDEO_FPS)
++        clips.append(scene_out)
++        expected_duration += duration
++        manifest["scenes"].append({"scene_number": scene.get("scene_number", index),
++                                   "visual": str(source), "audio": str(audio),
++                                   "duration": duration, "image_animation": is_image})
++        (work / "render_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+ 
+-        # Build active word-by-word karaoke ASS script
+-        ass_path = OUTPUT_DIR / f"{project_id}_sub_{idx + 1}.ass"
+-        build_karaoke_ass_script(
+-            words=words,
+-            narration=narration,
+-            duration=duration,
+-            output_path=ass_path,
+-            style_id=subtitle_style,
+-            position_id=subtitle_position,
+-            roman_text=roman_sub,
+-            script_format=subtitle_format
+-        )
+-        ass_files.append(ass_path)
++    playlist = work / "concat.txt"
++    playlist.write_text("".join(f"file '{clip.name}'\n" for clip in clips), encoding="utf-8")
++    raw = work / "assembled.mp4"
++    run_checked([
++        ffmpeg, "-nostdin", "-y", "-v", "error", "-f", "concat", "-safe", "1",
++        "-i", str(playlist), "-map", "0:v:0", "-map", "0:a:0", "-c", "copy",
++        "-movflags", "+faststart", str(raw),
++    ], timeout=max(90, expected_duration * 3), log_path=log, cwd=work)
+ 
+-        clean_ass = str(ass_path.resolve()).replace("\\", "/").replace(":", "\\:")
+-        is_video = str(img_path).lower().endswith((".mp4", ".mov", ".webm"))
++    if music_track_name and music_track_name != "none":
++        music = safe_child(MUSIC_DIR, music_track_name + ".mp3")
++        probe_media(music, require_audio=True)
++        mix = ("[0:a]asplit=2[voice][side];"
++               "[1:a]aresample=48000,volume=0.15[bed];"
++               "[bed][side]sidechaincompress=threshold=0.02:ratio=8:attack=20:release=250[ducked];"
++               "[voice][ducked]amix=inputs=2:duration=first:dropout_transition=0:normalize=0,"
++               "alimiter=limit=0.95[a]")
++        run_checked([
++            ffmpeg, "-nostdin", "-y", "-v", "error", "-filter_complex_threads", "2",
++            "-i", str(raw), "-stream_loop", "-1", "-i", str(music),
++            "-filter_complex", mix, "-map", "0:v:0", "-map", "[a]",
++            "-c:v", "copy", "-c:a", "aac", "-b:a", "192k", "-ar", "48000", "-ac", "2",
++            "-t", str(expected_duration), "-movflags", "+faststart", str(pending),
++        ], timeout=max(120, expected_duration * 4), log_path=log)
++    else:
++        raw.replace(pending)
+ 
+-        sub_filter = f",ass='{clean_ass}'"
+-
+-        if is_video:
+-            vf = (
+-                f"scale=1080:1920:force_original_aspect_ratio=increase,"
+-                f"crop=1080:1920"
+-                f"{sub_filter}"
+-            )
+-            cmd = [
+-                ffmpeg_exe, "-y",
+-                "-loglevel", "error",
+-                "-stream_loop", "-1",
+-                "-i", str(img_path),
+-                "-i", str(audio_path),
+-                "-map", "0:v:0",
+-                "-map", "1:a:0",
+-                "-t", str(duration),
+-                "-vf", vf,
+-                "-c:v", "libx264",
+-                "-preset", "ultrafast",
+-                "-c:a", "aac",
+-                "-b:a", "192k",
+-                "-pix_fmt", "yuv420p",
+-                str(scene_mp4)
+-            ]
+-        else:
+-            # Apply cinematic continuous camera ZoomPan motion to images
+-            vf = (
+-                f"zoompan=z='min(zoom+0.0015,1.20)':d=125:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps=30"
+-                f"{sub_filter}"
+-            )
+-            cmd = [
+-                ffmpeg_exe, "-y",
+-                "-loglevel", "error",
+-                "-loop", "1",
+-                "-i", str(img_path),
+-                "-i", str(audio_path),
+-                "-map", "0:v:0",
+-                "-map", "1:a:0",
+-                "-t", str(duration),
+-                "-vf", vf,
+-                "-c:v", "libx264",
+-                "-preset", "ultrafast",
+-                "-tune", "stillimage",
+-                "-c:a", "aac",
+-                "-b:a", "192k",
+-                "-pix_fmt", "yuv420p",
+-                str(scene_mp4)
+-            ]
+-
+-        res = subprocess.run(cmd, capture_output=True, timeout=90)
+-        if res.returncode != 0:
+-            print(f"[FFmpeg Scene {idx+1} Error]: {res.stderr.decode('utf-8', errors='ignore')}")
+-
+-        scene_mp4s.append(scene_mp4)
+-
+-    # Concatenate all scene clips with instant stream-copy
+-    concat_list_file = OUTPUT_DIR / f"{project_id}_concat.txt"
+-    with open(concat_list_file, "w", encoding="utf-8") as f:
+-        for sc in scene_mp4s:
+-            f.write(f"file '{sc.name}'\n")
+-
+-    raw_final_video = OUTPUT_DIR / f"{project_id}_raw.mp4"
+-    cmd_concat = [
+-        ffmpeg_exe, "-y",
+-        "-loglevel", "error",
+-        "-f", "concat",
+-        "-safe", "0",
+-        "-i", str(concat_list_file),
+-        "-c", "copy",
+-        str(raw_final_video)
+-    ]
+-    subprocess.run(cmd_concat, capture_output=True, timeout=60)
+-
+-    output_video_path = OUTPUT_DIR / f"{project_id}_final.mp4"
+-
+-    # Layer background music with smart audio ducking if requested
+-    if music_track_name and music_track_name != "none":
+-        music_path = MUSIC_DIR / f"{music_track_name}.mp3"
+-        if music_path.exists():
+-            cmd_music = [
+-                ffmpeg_exe, "-y",
+-                "-loglevel", "error",
+-                "-i", str(raw_final_video),
+-                "-stream_loop", "-1",
+-                "-i", str(music_path),
+-                "-filter_complex", "[1:a]volume=0.15[bg];[0:a][bg]amix=inputs=2:duration=first[a]",
+-                "-map", "0:v",
+-                "-map", "[a]",
+-                "-c:v", "copy",
+-                "-c:a", "aac",
+-                "-shortest",
+-                str(output_video_path)
+-            ]
+-            subprocess.run(cmd_music, capture_output=True, timeout=90)
+-        else:
+-            raw_final_video.replace(output_video_path)
+-    else:
+-        raw_final_video.replace(output_video_path)
+-
+-    # Cleanup temporary scene clips and subtitle files
+-    try:
+-        concat_list_file.unlink(missing_ok=True)
+-        for sc in scene_mp4s:
+-            sc.unlink(missing_ok=True)
+-        for ass in ass_files:
+-            ass.unlink(missing_ok=True)
+-        if raw_final_video.exists() and raw_final_video != output_video_path:
+-            raw_final_video.unlink(missing_ok=True)
+-    except Exception:
+-        pass
+-
+-    return output_video_path
++    checked = validate_final(pending, expected_duration, VIDEO_WIDTH, VIDEO_HEIGHT,
++                             VIDEO_FPS, full_decode=True, log_path=log)
++    manifest.update({"validated": True, "duration": checked["duration"],
++                     "width": VIDEO_WIDTH, "height": VIDEO_HEIGHT, "fps": VIDEO_FPS,
++                     "output": final.name})
++    (work / "render_manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
++    # Atomic publication: incomplete outputs are never listed as completed reels.
++    pending.replace(final)
++    for clip in clips:
++        clip.unlink(missing_ok=True)
++    raw.unlink(missing_ok=True)
++    # ASS files and diagnostics deliberately remain available after success/failure.
++    return final
+--- original/backend/services/video_providers.py
++++ repaired/backend/services/video_providers.py
+@@ -1,501 +1,286 @@
++"""Footage-first routing. Missing footage is an error, not a successful blank reel."""
++from __future__ import annotations
++
++import json
+ import os
+-import shutil
+-import random
+-import urllib.parse
++import re
++from pathlib import Path
++from typing import Any, Optional
+ import requests
+-import subprocess
+-from abc import ABC, abstractmethod
+-from pathlib import Path
+-from typing import List, Dict, Any, Optional, Tuple, Set
+-from PIL import Image
+-
+-import imageio_ffmpeg
+-from ..config import (
+-    VIDEO_WIDTH,
+-    VIDEO_HEIGHT,
+-    OUTPUT_DIR,
+-    VIDEOS_DIR,
+-    PEXELS_API_KEY
+-)
+-
+-
+-class BaseVideoProvider(ABC):
+-    """
+-    Abstract Base Class for all Video B-Roll Providers in ShortsGenius.
+-    """
++
++from .. import config
++from ..config import VIDEOS_DIR, OUTPUT_DIR
++from .media_tools import MediaError, executable, probe_media, run_checked, safe_child
++
++UPLOADS_DIR = OUTPUT_DIR / "uploads"
++VIDEO_EXTENSIONS = {".mp4", ".mov", ".webm", ".mkv"}
++MAX_MEDIA_BYTES = 250 * 1024 * 1024
++
++
++def pexels_key(context: Optional[dict] = None) -> str:
++    context = context or {}
++    return (context.get("pexels_api_key") or
++            os.environ.get("PEXELS_API_KEY", config.PEXELS_API_KEY) or "").strip()
++
++
++def library_manifest() -> dict:
++    manifest = VIDEOS_DIR / "manifest.json"
++    if manifest.exists():
++        try:
++            return json.loads(manifest.read_text(encoding="utf-8"))
++        except (ValueError, OSError) as exc:
++            raise MediaError("The library manifest is invalid JSON.") from exc
++    # These two files in the submitted archive are known photo-animation demos.
++    return {"facts_cosmos.mp4": {"kind": "photo_motion"},
++            "facts_nebula.mp4": {"kind": "photo_motion"}}
++
++
++def source_kind(path: Path) -> str:
++    if path.resolve().parent == VIDEOS_DIR.resolve():
++        return library_manifest().get(path.name, {}).get("kind", "user_library_video")
++    return "uploaded_or_downloaded_video"
++
++
++def resolve_custom_clip(value: str) -> Path:
++    """Legacy absolute upload paths work only inside the approved upload locations."""
++    candidate = Path(value)
++    roots = [UPLOADS_DIR.resolve(), VIDEOS_DIR.resolve()]
++    if candidate.is_absolute():
++        resolved = candidate.resolve()
++        allowed = any(resolved.parent == root for root in roots)
++        allowed |= (resolved.parent == OUTPUT_DIR.resolve() and resolved.name.startswith("upload_scene_"))
++        if not allowed:
++            raise MediaError("Custom clips must be uploaded or selected from the local library.")
++        if resolved.is_file() and resolved.suffix.lower() in VIDEO_EXTENSIONS:
++            return resolved
++        raise MediaError("The selected clip no longer exists or is not a supported video.")
++    for root in [UPLOADS_DIR, VIDEOS_DIR]:
++        path = safe_child(root, value)
++        if path.is_file() and path.suffix.lower() in VIDEO_EXTENSIONS:
++            return path
++    raise MediaError("The selected clip is missing. Upload or select it again.")
++
++
++class BaseVideoProvider:
+     def __init__(self, provider_id: str, display_name: str):
+-        self.provider_id = provider_id
+-        self.name = display_name
+-
+-    @abstractmethod
+-    def is_available(self, context: Optional[Dict[str, Any]] = None) -> bool:
+-        """Returns True if the provider is currently usable (API key present, assets exist, etc.)."""
+-        pass
+-
+-    @abstractmethod
+-    def generate_clip(
+-        self,
+-        scene: Dict[str, Any],
+-        output_path: Path,
+-        context: Optional[Dict[str, Any]] = None
+-    ) -> Optional[Path]:
+-        """
+-        Attempts to generate or retrieve a 1080x1920 vertical video clip for the scene.
+-        Returns the Path to the video if successful, or None if failed.
+-        """
+-        pass
++        self.provider_id, self.name = provider_id, display_name
++
++    def is_available(self, context=None):
++        return False
++
++    def generate_clip(self, scene, output_path, context=None):
++        raise NotImplementedError
+ 
+ 
+ class CustomUploadProvider(BaseVideoProvider):
+-    """
+-    Handles user-uploaded or manually attached video clips for specific scenes.
+-    """
+-    def __init__(self):
+-        super().__init__("upload", "CustomUpload")
+-
+-    def is_available(self, context: Optional[Dict[str, Any]] = None) -> bool:
++    def __init__(self):
++        super().__init__("upload", "User-selected video")
++
++    def is_available(self, context=None):
+         context = context or {}
+-        custom_clips = context.get("custom_clips", {})
+-        scene_key = context.get("scene_key", "")
+-        return bool(scene_key and scene_key in custom_clips)
+-
+-    def generate_clip(
+-        self,
+-        scene: Dict[str, Any],
+-        output_path: Path,
+-        context: Optional[Dict[str, Any]] = None
+-    ) -> Optional[Path]:
++        return context.get("scene_key") in context.get("custom_clips", {})
++
++    def generate_clip(self, scene, output_path, context=None):
+         context = context or {}
+-        custom_clips = context.get("custom_clips", {})
+-        scene_key = context.get("scene_key", "")
+-
+-        if not scene_key or scene_key not in custom_clips:
+-            return None
+-
+-        val = custom_clips[scene_key]
+-        candidate = Path(val) if os.path.exists(val) else (VIDEOS_DIR / val if (VIDEOS_DIR / val).exists() else None)
+-        if candidate and candidate.exists():
+-            return candidate
++        value = context.get("custom_clips", {}).get(context.get("scene_key"))
++        return resolve_custom_clip(value) if value else None
++
++
++class PexelsVideoProvider(BaseVideoProvider):
++    def __init__(self):
++        super().__init__("pexels", "Pexels stock video")
++
++    def is_available(self, context=None):
++        return bool(pexels_key(context))
++
++    def generate_clip(self, scene, output_path, context=None):
++        key = pexels_key(context)
++        if not key:
++            raise MediaError("Pexels API key is missing.")
++        query = str(scene.get("search_keyword", "")).strip()
++        if not query:
++            raise MediaError("This scene needs an English stock-footage search keyword.")
++        output_path = Path(output_path)
++        output_path.parent.mkdir(parents=True, exist_ok=True)
++        headers = {"Authorization": key, "User-Agent": "ShortsGenius/repair"}
++        last_error = "No usable stock clip matched the scene."
++        # Try portrait first, then any orientation; the compositor handles cropping.
++        for orientation in ("portrait", None):
++            params = {"query": query, "per_page": 8}
++            if orientation:
++                params["orientation"] = orientation
++            with requests.get("https://api.pexels.com/v1/videos/search", params=params,
++                              headers=headers, timeout=(5, 25)) as response:
++                if response.status_code in (401, 403):
++                    raise MediaError("Pexels rejected the key or account permissions.")
++                if response.status_code == 429:
++                    raise MediaError("Pexels rate limit reached; retry later or upload footage.")
++                response.raise_for_status()
++                videos = response.json().get("videos", [])
++            choices = []
++            used = (context or {}).get("used_clips", set())
++            for video in videos:
++                for item in video.get("video_files", []):
++                    if item.get("file_type") == "video/mp4" and str(item.get("link", "")).startswith("https://"):
++                        width, height = item.get("width") or 0, item.get("height") or 0
++                        if width > 0 and height > 0:
++                            # Prefer unused, near-full-HD files rather than always downloading 4K.
++                            score = (f"pexels:{video.get('id')}" in used,
++                                     abs(width * height - 1080 * 1920))
++                            choices.append((score, video, item))
++            for _, video, item in sorted(choices, key=lambda candidate: candidate[0])[:4]:
++                partial = output_path.with_suffix(".download")
++                try:
++                    with requests.get(item["link"], stream=True, timeout=(5, 30)) as download:
++                        download.raise_for_status()
++                        size = 0
++                        with partial.open("wb") as handle:
++                            for chunk in download.iter_content(128 * 1024):
++                                if not chunk:
++                                    continue
++                                size += len(chunk)
++                                if size > MAX_MEDIA_BYTES:
++                                    raise MediaError("Stock download exceeds 250 MB.")
++                                handle.write(chunk)
++                    probe_media(partial, require_video=True, decode=True)
++                    partial.replace(output_path)
++                    used.add(f"pexels:{video.get('id')}")
++                    output_path.with_suffix(".source.json").write_text(json.dumps({
++                        "provider": "pexels", "video_id": video.get("id"),
++                        "source_url": video.get("url"), "creator": video.get("user", {}),
++                    }, indent=2), encoding="utf-8")
++                    return output_path
++                except (requests.RequestException, MediaError, OSError) as exc:
++                    last_error = str(exc)
++                    partial.unlink(missing_ok=True)
++        raise MediaError(last_error)
++
++
++class CuratedStockProvider(BaseVideoProvider):
++    def __init__(self):
++        super().__init__("curated", "Matched local library")
++
++    def is_available(self, context=None):
++        return VIDEOS_DIR.exists() and any(VIDEOS_DIR.glob("*.mp4"))
++
++    def generate_clip(self, scene, output_path, context=None):
++        context = context or {}
++        query = set(re.findall(r"[a-z0-9]+", (str(scene.get("search_keyword", "")) + " " +
++                                            str(scene.get("visual_prompt", ""))).lower()))
++        categories = {
++            "tech": {"tech", "technology", "ai", "software", "computer", "coding", "developer", "laptop"},
++            "gym": {"gym", "fitness", "exercise", "barbell", "workout", "training"},
++            "fashion": {"fashion", "runway", "outfit", "clothing", "streetwear", "model"},
++            "facts": {"space", "cosmos", "galaxy", "nebula", "stars", "universe", "planet"},
++        }
++        for category, terms in categories.items():
++            if query & terms:
++                query.add(category)
++        manifest, candidates = library_manifest(), []
++        for clip in sorted(VIDEOS_DIR.glob("*.mp4")):
++            info = manifest.get(clip.name, {})
++            if info.get("kind") in {"photo_motion", "procedural"} and not context.get("allow_photo_motion"):
++                continue
++            tags = set(re.findall(r"[a-z0-9]+", clip.stem.lower()))
++            tags.update(str(tag).lower() for tag in info.get("tags", []))
++            score = len(query & tags)
++            if score:
++                candidates.append((score, clip))
++        used = context.get("used_clips", set())
++        for _, clip in sorted(candidates, key=lambda item: (item[1].name in used, -item[0], item[1].name)):
++            try:
++                probe_media(clip, require_video=True, decode=True)
++                used.add(clip.name)
++                return clip
++            except MediaError:
++                continue
+         return None
+ 
+ 
+-class PexelsVideoProvider(BaseVideoProvider):
+-    """
+-    Fetches real 1080x1920 vertical MP4 stock footage from Pexels Video Search API.
+-    """
+-    def __init__(self):
+-        super().__init__("pexels", "PexelsVideoAPI")
+-
+-    def is_available(self, context: Optional[Dict[str, Any]] = None) -> bool:
+-        context = context or {}
+-        api_key = context.get("pexels_api_key") or PEXELS_API_KEY or os.getenv("PEXELS_API_KEY", "")
+-        return bool(api_key and len(api_key.strip()) > 5)
+-
+-    def generate_clip(
+-        self,
+-        scene: Dict[str, Any],
+-        output_path: Path,
+-        context: Optional[Dict[str, Any]] = None
+-    ) -> Optional[Path]:
+-        context = context or {}
+-        api_key = context.get("pexels_api_key") or PEXELS_API_KEY or os.getenv("PEXELS_API_KEY", "")
+-        if not api_key:
+-            return None
+-
+-        query = scene.get("search_keyword", "technology").strip()
+-        try:
+-            headers = {"Authorization": api_key.strip(), "User-Agent": "ShortsGenius/1.0"}
+-            url = f"https://api.pexels.com/videos/search?query={urllib.parse.quote(query)}&orientation=portrait&per_page=5"
+-            res = requests.get(url, headers=headers, timeout=12)
+-
+-            if res.status_code == 200:
+-                data = res.json()
+-                videos = data.get("videos", [])
+-                for vid in videos:
+-                    vfiles = vid.get("video_files", [])
+-                    portrait_files = [
+-                        f for f in vfiles
+-                        if f.get("link") and f.get("file_type") == "video/mp4" and f.get("height", 0) >= f.get("width", 0)
+-                    ]
+-                    portrait_files.sort(key=lambda x: (x.get("width", 0) * x.get("height", 0)), reverse=True)
+-
+-                    chosen = portrait_files[0] if portrait_files else (vfiles[0] if vfiles else None)
+-                    if chosen and chosen.get("link"):
+-                        with requests.get(chosen["link"], stream=True, timeout=25) as r:
+-                            if r.status_code == 200:
+-                                with open(output_path, "wb") as f:
+-                                    for chunk in r.iter_content(chunk_size=1024 * 128):
+-                                        f.write(chunk)
+-                                if output_path.exists() and output_path.stat().st_size > 10000:
+-                                    return output_path
+-        except Exception as e:
+-            print(f"[PexelsVideoProvider] Fetch failed for '{query}': {e}")
+-        return None
+-
+-
+-class CuratedStockProvider(BaseVideoProvider):
+-    """
+-    Matches built-in curated 1080x1920 vertical video clips from backend/assets/videos/.
+-    Rotates clips intelligently across scenes to avoid repetition.
+-    """
+-    def __init__(self):
+-        super().__init__("curated", "CuratedStockLibrary")
+-
+-    def is_available(self, context: Optional[Dict[str, Any]] = None) -> bool:
+-        return bool(VIDEOS_DIR.exists() and list(VIDEOS_DIR.glob("*.mp4")))
+-
+-    def generate_clip(
+-        self,
+-        scene: Dict[str, Any],
+-        output_path: Path,
+-        context: Optional[Dict[str, Any]] = None
+-    ) -> Optional[Path]:
+-        if not VIDEOS_DIR.exists():
+-            return None
+-
+-        local_videos = list(VIDEOS_DIR.glob("*.mp4"))
+-        if not local_videos:
+-            return None
+-
+-        context = context or {}
+-        used_clips = context.get("used_clips", set())
+-
+-        keyword = scene.get("search_keyword", "")
+-        prompt = scene.get("visual_prompt", "")
+-        category = scene.get("scene_category", "")
+-        combined = f"{keyword} {prompt} {category}".lower()
+-
+-        categories = {
+-            "tech": ["tech", "ai", "matrix", "neural", "coding", "code", "software", "computer", "future", "cyberpunk", "tool", "productivity"],
+-            "fashion": ["fashion", "model", "outfit", "streetwear", "style", "wear", "clothes", "shoes", "sneakers", "luxury", "jacket", "suit", "runway"],
+-            "gym": ["gym", "workout", "fitness", "muscle", "exercise", "training", "bench", "barbell", "protein", "diet", "lift"],
+-            "facts": ["facts", "cosmos", "space", "galaxy", "nebula", "universe", "science", "lab", "quantum", "stars", "planet"]
+-        }
+-
+-        # Try exact or category match
+-        for cat, syns in categories.items():
+-            if any(s in combined for s in syns):
+-                matching = [v for v in local_videos if v.stem.startswith(cat) or any(s in v.stem for s in syns)]
+-                if matching:
+-                    # Prefer clips not already used in this Reel
+-                    unused = [v for v in matching if v.name not in used_clips]
+-                    chosen = random.choice(unused) if unused else random.choice(matching)
+-                    used_clips.add(chosen.name)
+-                    return chosen
+-
+-        # Fallback to any unused local video or random
+-        unused_all = [v for v in local_videos if v.name not in used_clips]
+-        chosen = random.choice(unused_all) if unused_all else random.choice(local_videos)
+-        used_clips.add(chosen.name)
+-        return chosen
+-
+-
+ class GenerativeAIVideoProvider(BaseVideoProvider):
+-    """
+-    AI Visual Generator: Synthesizes high-resolution vertical visuals matching visual_prompt
+-    and generates smooth 1080x1920 MP4 clips with dynamic 2.5D camera motion.
+-    Pluggable for Pollinations AI, Fal.ai, and Kling.
+-    """
+-    def __init__(self):
+-        super().__init__("ai_video", "GenerativeAIVideo")
+-
+-    def is_available(self, context: Optional[Dict[str, Any]] = None) -> bool:
+-        # Generative AI pipeline is enabled by default via fast neural renderer
+-        return True
+-
+-    def generate_clip(
+-        self,
+-        scene: Dict[str, Any],
+-        output_path: Path,
+-        context: Optional[Dict[str, Any]] = None
+-    ) -> Optional[Path]:
+-        prompt = scene.get("visual_prompt", "") or scene.get("search_keyword", "futuristic technology")
+-        duration = float(scene.get("duration_estimate_sec", 5.0))
+-        img_temp_path = output_path.with_suffix(".temp.png")
+-
+-        clean_prompt = f"{prompt}, vertical 9:16 portrait, cinematic lighting, 8k, photorealistic, highly detailed"
+-        encoded_prompt = urllib.parse.quote(clean_prompt[:250])
+-        seed = random.randint(1000, 999999)
+-
+-        urls = [
+-            f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1080&height=1920&nologo=true&seed={seed}",
+-            f"https://image.pollinations.ai/prompt/{encoded_prompt}?width=1080&height=1920&nologo=true&seed={seed}&model=flux",
+-        ]
+-
+-        got_image = False
+-        for url in urls:
++    def __init__(self):
++        super().__init__("ai_video", "AI video generation - not connected")
++
++    def generate_clip(self, scene, output_path, context=None):
++        raise MediaError("No actual AI video API is configured. Upload a generated MP4 instead.")
++
++
++class ProceduralMotionProvider(BaseVideoProvider):
++    """Explicit demonstration only. Never part of automatic footage fallback."""
++    def __init__(self):
++        super().__init__("procedural", "Demo gradient (not footage)")
++
++    def is_available(self, context=None):
++        return bool((context or {}).get("allow_photo_motion"))
++
++    def generate_clip(self, scene, output_path, context=None):
++        if not self.is_available(context):
++            raise MediaError("Demo backgrounds require explicit opt-in.")
++        duration = max(0.5, min(60.0, float(scene.get("duration_estimate_sec", 5))))
++        run_checked([
++            executable("ffmpeg"), "-nostdin", "-y", "-v", "error", "-f", "lavfi",
++            "-i", "gradients=s=1080x1920:rate=30:c0=0x0F172A:c1=0x00F2FE:type=radial:speed=0.05",
++            "-t", str(duration), "-c:v", "libx264", "-preset", "veryfast", "-threads", "2",
++            "-pix_fmt", "yuv420p", str(output_path),
++        ], timeout=max(120, duration * 20))
++        return output_path
++
++
++class VideoProviderRouter:
++    def __init__(self):
++        self.providers = {provider.provider_id: provider for provider in (
++            CustomUploadProvider(), PexelsVideoProvider(), CuratedStockProvider(),
++            GenerativeAIVideoProvider(), ProceduralMotionProvider(),
++        )}
++
++    def list_available_providers(self, context=None):
++        return [{"id": key, "name": provider.name,
++                 "is_available": provider.is_available(context)}
++                for key, provider in self.providers.items()]
++
++    def resolve_scene_clip(self, scene, output_path, scene_index, preferred_provider=None,
++                           custom_clips=None, pexels_api_key=None, used_clips=None,
++                           allow_photo_motion=False, trace=None):
++        number = scene.get("scene_number", scene_index + 1)
++        context = {"scene_key": f"scene_{number}", "custom_clips": custom_clips or {},
++                   "pexels_api_key": pexels_api_key, "allow_photo_motion": allow_photo_motion,
++                   "used_clips": used_clips if used_clips is not None else set()}
++        trace = trace if trace is not None else []
++
++        def validate(path):
++            if not path:
++                raise MediaError("No matching usable footage found.")
++            if source_kind(path) in {"photo_motion", "procedural"} and not allow_photo_motion:
++                raise MediaError("This is a photo-animation demo. Upload footage or explicitly allow photo motion.")
++            probe_media(path, require_video=True, decode=True)
++            return Path(path)
++
++        if self.providers["upload"].is_available(context):
++            # A broken manual choice is an error; never silently replace the user's clip.
++            clip = validate(self.providers["upload"].generate_clip(scene, output_path, context))
++            trace.append({"scene_number": number, "provider": "upload", "status": "selected",
++                          "file": clip.name, "kind": source_kind(clip)})
++            return clip, self.providers["upload"].name
++
++        preferred = (preferred_provider or "auto").strip().lower()
++        if preferred not in {"auto", *self.providers.keys()}:
++            raise MediaError(f"Unknown video provider: {preferred}")
++        order = ["pexels", "curated"] if preferred == "auto" else [preferred]
++        failures = []
++        for key in order:
++            provider = self.providers[key]
+             try:
+-                res = requests.get(url, timeout=12)
+-                if res.status_code == 200 and len(res.content) > 10000:
+-                    with open(img_temp_path, "wb") as f:
+-                        f.write(res.content)
+-                    got_image = True
+-                    break
+-            except Exception as e:
+-                print(f"[GenerativeAIVideoProvider] Pollinations attempt failed: {e}")
+-
+-        # If neural generator was rate-limited or unavailable, fall back to matching Curated Stock
+-        if not got_image or not img_temp_path.exists():
+-            print(f"[GenerativeAIVideoProvider] Online generator busy. Falling back to genuine Curated Stock footage.")
+-            curated = CuratedStockProvider()
+-            clip = curated.generate_clip(scene, output_path, context)
+-            if clip and clip.exists():
+-                return clip
+-            return None
+-
+-        # Convert AI generated visual to smooth 1080x1920 video clip with camera motion
+-        try:
+-            ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+-            frames = int(duration * 30)
+-            cmd = [
+-                ffmpeg_exe, "-y",
+-                "-loop", "1",
+-                "-i", str(img_temp_path),
+-                "-t", str(duration),
+-                "-vf", (
+-                    f"scale=1080:1920:force_original_aspect_ratio=increase,"
+-                    f"crop=1080:1920,"
+-                    f"zoompan=z='min(zoom+0.0018,1.25)':d={frames}:x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':s=1080x1920:fps=30"
+-                ),
+-                "-c:v", "libx264",
+-                "-preset", "ultrafast",
+-                "-pix_fmt", "yuv420p",
+-                str(output_path)
+-            ]
+-            subprocess.run(cmd, capture_output=True, timeout=35)
+-            img_temp_path.unlink(missing_ok=True)
+-
+-            if output_path.exists() and output_path.stat().st_size > 5000:
+-                return output_path
+-        except Exception as e:
+-            print(f"[GenerativeAIVideoProvider] Motion encode failed: {e}")
+-            if img_temp_path.exists():
+-                img_temp_path.unlink(missing_ok=True)
+-
+-        return None
+-
+-
+-class PexelsPhotoProvider(BaseVideoProvider):
+-    """
+-    Fetches high-resolution portrait photos from Pexels for continuous cinematic camera ZoomPan.
+-    """
+-    def __init__(self):
+-        super().__init__("photo", "PexelsPhotoCameraMotion")
+-
+-    def is_available(self, context: Optional[Dict[str, Any]] = None) -> bool:
+-        context = context or {}
+-        api_key = context.get("pexels_api_key") or PEXELS_API_KEY or os.getenv("PEXELS_API_KEY", "")
+-        return bool(api_key and len(api_key.strip()) > 5)
+-
+-    def generate_clip(
+-        self,
+-        scene: Dict[str, Any],
+-        output_path: Path,
+-        context: Optional[Dict[str, Any]] = None
+-    ) -> Optional[Path]:
+-        context = context or {}
+-        api_key = context.get("pexels_api_key") or PEXELS_API_KEY or os.getenv("PEXELS_API_KEY", "")
+-        if not api_key:
+-            return None
+-
+-        query = scene.get("search_keyword", "technology").strip()
+-        photo_path = output_path.with_suffix(".png")
+-
+-        try:
+-            headers = {"Authorization": api_key.strip(), "User-Agent": "ShortsGenius/1.0"}
+-            url = f"https://api.pexels.com/v1/search?query={urllib.parse.quote(query)}&orientation=portrait&per_page=3"
+-            res = requests.get(url, headers=headers, timeout=10)
+-            if res.status_code == 200:
+-                data = res.json()
+-                photos = data.get("photos", [])
+-                if photos:
+-                    img_url = photos[0]["src"]["portrait"]
+-                    img_res = requests.get(img_url, timeout=15)
+-                    if img_res.status_code == 200:
+-                        with open(photo_path, "wb") as f:
+-                            f.write(img_res.content)
+-                        self._normalize_to_vertical(photo_path)
+-                        return photo_path
+-        except Exception as e:
+-            print(f"[PexelsPhotoProvider] Photo fetch failed: {e}")
+-        return None
+-
+-    def _normalize_to_vertical(self, image_path: Path):
+-        with Image.open(image_path) as img:
+-            img = img.convert("RGB")
+-            target_w, target_h = VIDEO_WIDTH, VIDEO_HEIGHT
+-            img_ratio = img.width / img.height
+-            target_ratio = target_w / target_h
+-
+-            if img_ratio > target_ratio:
+-                new_h = target_h
+-                new_w = int(target_h * img_ratio)
+-            else:
+-                new_w = target_w
+-                new_h = int(target_w / img_ratio)
+-
+-            resized = img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+-            left = (new_w - target_w) // 2
+-            top = (new_h - target_h) // 2
+-            cropped = resized.crop((left, top, left + target_w, top + target_h))
+-            cropped.save(image_path, "PNG")
+-
+-
+-class ProceduralMotionProvider(BaseVideoProvider):
+-    """
+-    Failsafe procedural vertical motion synthesizer using FFmpeg.
+-    Guarantees that a rich dynamic 1080x1920 video clip is ALWAYS generated.
+-    """
+-    def __init__(self):
+-        super().__init__("procedural", "ProceduralMotionSynthesizer")
+-
+-    def is_available(self, context: Optional[Dict[str, Any]] = None) -> bool:
+-        return True
+-
+-    def generate_clip(
+-        self,
+-        scene: Dict[str, Any],
+-        output_path: Path,
+-        context: Optional[Dict[str, Any]] = None
+-    ) -> Optional[Path]:
+-        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+-        duration = float(scene.get("duration_estimate_sec", 5.0))
+-        scene_idx = context.get("scene_index", 0) if context else 0
+-
+-        color_schemes = [
+-            ("0x0F172A", "0x00F2FE"),  # Dark Slate -> Electric Cyan
+-            ("0x1E1B4B", "0xD946EF"),  # Midnight Indigo -> Fuchsia
+-            ("0x064E3B", "0x14B8A6"),  # Deep Emerald -> Teal
+-            ("0x450A0A", "0xF97316"),  # Crimson -> Orange
+-        ]
+-        c_dark, c_bright = color_schemes[scene_idx % len(color_schemes)]
+-
+-        cmd = [
+-            ffmpeg_exe, "-y",
+-            "-f", "lavfi",
+-            "-i", f"gradients=s=1080x1920:rate=30:c0={c_dark}:c1={c_bright}:x0=540:y0=960:r=650:type=radial",
+-            "-t", str(max(2.0, duration)),
+-            "-c:v", "libx264",
+-            "-preset", "ultrafast",
+-            "-pix_fmt", "yuv420p",
+-            str(output_path)
+-        ]
+-        res = subprocess.run(cmd, capture_output=True)
+-        if output_path.exists() and output_path.stat().st_size > 1000:
+-            return output_path
+-
+-        # Secondary fallback if gradients filter is not supported
+-        cmd_color = [
+-            ffmpeg_exe, "-y",
+-            "-f", "lavfi",
+-            "-i", f"color=c={c_dark}:s=1080x1920:rate=30",
+-            "-t", str(max(2.0, duration)),
+-            "-c:v", "libx264",
+-            "-preset", "ultrafast",
+-            "-pix_fmt", "yuv420p",
+-            str(output_path)
+-        ]
+-        subprocess.run(cmd_color, capture_output=True)
+-        if output_path.exists() and output_path.stat().st_size > 1000:
+-            return output_path
+-
+-        return None
+-
+-
+-class VideoProviderRouter:
+-    """
+-    Phase 2: Master Video Provider Router with Circuit Breaker and Cascading Fallback Chain.
+-    Routes every scene to the best available video model/provider.
+-    Supports user preferred provider overrides per scene.
+-    """
+-    def __init__(self):
+-        self.providers: Dict[str, BaseVideoProvider] = {
+-            "upload": CustomUploadProvider(),
+-            "pexels": PexelsVideoProvider(),
+-            "curated": CuratedStockProvider(),
+-            "ai_video": GenerativeAIVideoProvider(),
+-            "photo": PexelsPhotoProvider(),
+-            "procedural": ProceduralMotionProvider()
+-        }
+-
+-    def list_available_providers(self, context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+-        """Returns list of all registered providers with live availability status."""
+-        result = []
+-        for pid, provider in self.providers.items():
+-            result.append({
+-                "id": pid,
+-                "name": provider.name,
+-                "is_available": provider.is_available(context)
+-            })
+-        return result
+-
+-    def resolve_scene_clip(
+-        self,
+-        scene: Dict[str, Any],
+-        output_path: Path,
+-        scene_index: int,
+-        preferred_provider: Optional[str] = None,
+-        custom_clips: Optional[Dict[str, str]] = None,
+-        pexels_api_key: Optional[str] = None,
+-        used_clips: Optional[Set[str]] = None
+-    ) -> Tuple[Path, str]:
+-        """
+-        Cascades through providers in priority order until a valid clip is retrieved.
+-        Returns:
+-            (Path to clip, Name of winning provider)
+-        """
+-        scene_num = scene.get("scene_number", scene_index + 1)
+-        context = {
+-            "scene_key": f"scene_{scene_num}",
+-            "scene_index": scene_index,
+-            "custom_clips": custom_clips or {},
+-            "pexels_api_key": pexels_api_key or PEXELS_API_KEY,
+-            "used_clips": used_clips if used_clips is not None else set()
+-        }
+-
+-        # 1. If custom clip is explicitly attached by user for this scene, always honor it
+-        upload_prov = self.providers.get("upload")
+-        if upload_prov and upload_prov.is_available(context):
+-            res = upload_prov.generate_clip(scene, output_path, context)
+-            if res and res.exists() and res.stat().st_size > 1000:
+-                return res, upload_prov.name
+-
+-        # 2. If a specific provider was preferred by user (not 'auto')
+-        pref = (preferred_provider or "").lower().strip()
+-        if pref and pref != "auto" and pref in self.providers:
+-            prov = self.providers[pref]
+-            if prov.is_available(context):
+-                try:
+-                    res = prov.generate_clip(scene, output_path, context)
+-                    if res and res.exists() and res.stat().st_size > 1000:
+-                        return res, prov.name
+-                except Exception as e:
+-                    print(f"[ProviderRouter] Preferred provider '{pref}' failed for scene {scene_num}: {e}. Cascading to real footage...")
+-            else:
+-                if pref == "pexels":
+-                    print(f"[ProviderRouter] Scene {scene_num}: 'pexels' was selected but PEXELS_API_KEY is missing. Cascading to genuine Curated Stock / Generative AI...")
+-                else:
+-                    print(f"[ProviderRouter] Scene {scene_num}: Provider '{pref}' is not available. Cascading...")
+-
+-        # 3. Standard Fallback Chain (Route 3 Hybrid Architecture):
+-        # Priority order: Pexels Video -> Curated Stock -> Generative AI -> Pexels Photo -> Procedural Motion
+-        cascade_order = ["pexels", "curated", "ai_video", "photo", "procedural"]
+-
+-        for pid in cascade_order:
+-            prov = self.providers.get(pid)
+-            if prov and prov.is_available(context):
+-                try:
+-                    res = prov.generate_clip(scene, output_path, context)
+-                    if res and res.exists() and res.stat().st_size > 1000:
+-                        return res, prov.name
+-                except Exception as e:
+-                    print(f"[ProviderRouter] {prov.name} failed for scene {scene_num}: {e}. Cascading...")
+-
+-        # 4. Ultimate failsafe guarantee
+-        failsafe = self.providers["procedural"]
+-        clip = failsafe.generate_clip(scene, output_path, context)
+-        return clip, failsafe.name
+-
+-
+-# Singleton Router instance
++                if not provider.is_available(context):
++                    raise MediaError(f"{provider.name} is not configured or has no assets.")
++                clip = validate(provider.generate_clip(scene, output_path, context))
++                trace.append({"scene_number": number, "provider": key, "status": "selected",
++                              "file": clip.name, "kind": source_kind(clip)})
++                return clip, provider.name
++            except (MediaError, requests.RequestException, OSError, ValueError) as exc:
++                failures.append(str(exc))
++                trace.append({"scene_number": number, "provider": key, "status": "failed", "reason": str(exc)})
++        raise MediaError(f"Scene {number} has no usable footage. Upload a clip or choose a configured "
++                         "source. " + " | ".join(failures))
++
++
+ ROUTER = VideoProviderRouter()
+--- original/backend/services/subtitle_engine.py
++++ repaired/backend/services/subtitle_engine.py
+@@ -95,7 +95,7 @@
+ }
+ 
+ 
+-def align_roman_words(spoken_words: List[Dict[str, Any]], roman_text: str) -> List[Dict[str, Any]]:
++def align_roman_words(spoken_words: List[Dict[str, Any]], roman_text: str, duration: float = 5.0) -> List[Dict[str, Any]]:
+     """
+     Aligns spoken word timestamps (from Edge-TTS) with Roman Telugu / English words.
+     Returns words with Roman text and synchronized timestamps.
+@@ -106,7 +106,14 @@
+         return spoken_words
+ 
+     if not spoken_words:
+-        return [{"word": w.upper(), "start": 0.0, "end": 5.0} for w in roman_words]
++        total_chars = sum(len(w) for w in roman_words) or 1
++        elapsed = 0.0
++        result = []
++        for word in roman_words:
++            end = elapsed + duration * len(word) / total_chars
++            result.append({"word": word.upper(), "start": elapsed, "end": min(duration, end)})
++            elapsed = end
++        return result
+ 
+     total_start = spoken_words[0]["start"]
+     total_end = spoken_words[-1]["end"]
+@@ -125,7 +132,7 @@
+     result = []
+     for w in roman_words:
+         fraction = len(w) / total_chars
+-        w_dur = max(0.2, total_duration * fraction)
++        w_dur = total_duration * fraction
+         w_end = min(total_end, curr_time + w_dur)
+         result.append({"word": w.upper(), "start": round(curr_time, 3), "end": round(w_end, 3)})
+         curr_time = w_end
+@@ -171,17 +178,17 @@
+         font_name = "Arial Black"
+         f_size = style["font_size"] + 6  # 64px for ultra-punchy western uppercase font
+         if roman_text and roman_text.strip():
+-            active_words = align_roman_words(words, roman_text.strip())
++            active_words = align_roman_words(words, roman_text.strip(), duration)
+         elif words:
+             # Fallback transliteration
+             try:
+                 from .script_generator import convert_telugu_to_roman
+                 roman_fallback = convert_telugu_to_roman(" ".join(w.get("word", "") for w in words))
+-                active_words = align_roman_words(words, roman_fallback)
++                active_words = align_roman_words(words, roman_fallback, duration)
+             except Exception:
+                 pass
+     else:
+-        font_name = "Nirmala UI"
++        font_name = os.getenv("SUBTITLE_FONT_NATIVE", "Nirmala UI" if os.name == "nt" else "Noto Sans Telugu")
+         f_size = style["font_size"]
+ 
+     header = f"""[Script Info]
+@@ -209,8 +216,10 @@
+ 
+         for chunk in chunks:
+             for word_idx, active_word in enumerate(chunk):
+-                w_start = active_word["start"]
+-                w_end = active_word["end"]
++                w_start = max(0.0, float(active_word["start"]))
++                w_end = min(duration, float(active_word["end"]))
++                if w_start >= duration or w_end <= w_start:
++                    continue
+ 
+                 # If word has 0 or negligible duration, enforce minimum 0.2s duration
+                 if w_end <= w_start:
+@@ -222,7 +231,7 @@
+                 # Build line where the active word has highlight color & scale pop
+                 line_parts = []
+                 for idx, w_obj in enumerate(chunk):
+-                    w_text = w_obj["word"]
++                    w_text = _safe_ass_text(str(w_obj["word"]))
+                     if idx == word_idx:
+                         # Active spoken word: highlight color + scale pop
+                         line_parts.append(f"{{\\c{h_color}\\fscx{scale_pop}\\fscy{scale_pop}}}{w_text}{{\\r}}")
+@@ -236,7 +245,7 @@
+         # Fallback if no word timestamps: display full sentence chunk
+         start_str = _format_ass_time(0.0)
+         end_str = _format_ass_time(duration)
+-        text_clean = roman_text.upper() if (script_format == "roman" and roman_text) else narration.strip()
++        text_clean = _safe_ass_text(roman_text.upper() if (script_format == "roman" and roman_text) else narration.strip())
+         dialogue_lines.append(f"Dialogue: 0,{start_str},{end_str},ReelStyle,,0,0,0,,{{\\c{h_color}}}{text_clean}{{\\r}}")
+ 
+     full_ass_content = header + "\n".join(dialogue_lines) + "\n"
+@@ -247,12 +256,14 @@
+     return output_path
+ 
+ 
++def _safe_ass_text(text: str) -> str:
++    # Prevent user text being interpreted as ASS override tags or hard line breaks.
++    return text.replace("\\", "/").replace("{", "(").replace("}", ")").replace("\n", " ").replace("\r", " ")
++
++
+ def _format_ass_time(seconds: float) -> str:
+-    """Formats float seconds into ASS time format: H:MM:SS.cs"""
+-    hrs = int(seconds // 3600)
+-    mins = int((seconds % 3600) // 60)
+-    secs = int(seconds % 60)
+-    cs = int(round((seconds - int(seconds)) * 100))
+-    if cs >= 100:
+-        cs = 99
+-    return f"{hrs}:{mins:02d}:{secs:02d}.{cs:02d}"
++    centiseconds = max(0, round(seconds * 100))
++    hours, rest = divmod(centiseconds, 360000)
++    minutes, rest = divmod(rest, 6000)
++    seconds, centiseconds = divmod(rest, 100)
++    return f"{hours}:{minutes:02d}:{seconds:02d}.{centiseconds:02d}"
+--- original/backend/services/media_tools.py
++++ repaired/backend/services/media_tools.py
+@@ -0,0 +1,160 @@
++"""Local media checks. No shell commands, remote paths, or filename-only validation."""
++from __future__ import annotations
++
++import json
++import math
++import os
++import re
++import shutil
++import subprocess
++from functools import lru_cache
++from pathlib import Path
++from typing import Any, Optional
++
++
++class MediaError(RuntimeError):
++    pass
++
++
++def executable(name: str) -> str:
++    value = os.getenv(f"{name.upper()}_EXE", "").strip()
++    found = shutil.which(value or name)
++    if not found and value and Path(value).is_file():
++        found = str(Path(value).resolve())
++    if not found:
++        raise MediaError(
++            f"{name} is not installed/on PATH. Install FFmpeg with ffprobe, "
++            f"or set {name.upper()}_EXE to the executable's full path."
++        )
++    return found
++
++
++def run_checked(args: list[str], *, timeout: float = 120,
++                log_path: Optional[Path] = None, cwd: Optional[Path] = None
++                ) -> subprocess.CompletedProcess:
++    try:
++        result = subprocess.run(
++            args, stdin=subprocess.DEVNULL, capture_output=True,
++            text=True, encoding="utf-8", errors="replace",
++            timeout=timeout, cwd=str(cwd) if cwd else None,
++        )
++    except subprocess.TimeoutExpired as exc:
++        message = f"Media command exceeded {timeout:.0f}s."
++        if log_path:
++            log_path.parent.mkdir(parents=True, exist_ok=True)
++            with log_path.open("a", encoding="utf-8") as handle:
++                handle.write(message + "\n" + repr(args) + "\n")
++        raise MediaError(message) from exc
++    if log_path:
++        log_path.parent.mkdir(parents=True, exist_ok=True)
++        with log_path.open("a", encoding="utf-8") as handle:
++            handle.write(repr(args) + "\n" + result.stderr + "\n")
++    if result.returncode:
++        raise MediaError(
++            f"{Path(args[0]).name} exited with code {result.returncode}: "
++            f"{result.stderr[-2400:].strip()}"
++        )
++    return result
++
++
++@lru_cache(maxsize=1)
++def check_tools() -> dict[str, Any]:
++    ffmpeg, ffprobe = executable("ffmpeg"), executable("ffprobe")
++    filters = run_checked([ffmpeg, "-hide_banner", "-filters"], timeout=15).stdout
++    encoders = run_checked([ffmpeg, "-hide_banner", "-encoders"], timeout=15).stdout
++    available = {line.split()[1] for line in filters.splitlines() if len(line.split()) > 2}
++    missing = {"ass", "scale", "crop", "fps", "sidechaincompress", "amix"} - available
++    if missing:
++        raise MediaError("FFmpeg is missing required filters: " + ", ".join(sorted(missing)))
++    if not re.search(r"\blibx264\b", encoders) or not re.search(r"\baac\b", encoders):
++        raise MediaError("FFmpeg requires the libx264 video and AAC audio encoders.")
++    return {"ok": True, "ffmpeg": ffmpeg, "ffprobe": ffprobe, "libass": True}
++
++
++def safe_child(root: Path, name: str) -> Path:
++    if not name or name in (".", "..") or "/" in name or "\\" in name or "\x00" in name:
++        raise MediaError("Invalid media identifier; a filename, not a path, is required.")
++    target = (root / name).resolve()
++    if not target.is_relative_to(root.resolve()):
++        raise MediaError("Media path escapes its storage directory.")
++    return target
++
++
++def validate_job_id(value: str) -> str:
++    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", value):
++        raise MediaError("Invalid job identifier.")
++    return value
++
++
++def probe_media(path: Path | str, *, require_video: bool = False,
++                require_audio: bool = False, decode: bool = False) -> dict[str, Any]:
++    path = Path(path).resolve()
++    if not path.is_file() or path.stat().st_size == 0:
++        raise MediaError(f"Missing or empty media: {path.name}")
++    result = run_checked([
++        executable("ffprobe"), "-v", "error", "-protocol_whitelist", "file,pipe",
++        "-show_streams", "-show_format", "-of", "json", str(path),
++    ], timeout=30)
++    try:
++        data = json.loads(result.stdout)
++    except (ValueError, TypeError) as exc:
++        raise MediaError(f"Could not read media metadata: {path.name}") from exc
++    streams = data.get("streams", [])
++    video = next((s for s in streams if s.get("codec_type") == "video"
++                  and not s.get("disposition", {}).get("attached_pic")), None)
++    audio = next((s for s in streams if s.get("codec_type") == "audio"), None)
++    if require_video and not video:
++        raise MediaError(f"No video stream in {path.name}; renaming a file is not conversion.")
++    if require_audio and not audio:
++        raise MediaError(f"No audio stream in {path.name}.")
++    duration_values = [data.get("format", {}).get("duration")]
++    duration_values.extend(s.get("duration") for s in streams)
++    duration = 0.0
++    for value in duration_values:
++        try:
++            candidate = float(value)
++            if math.isfinite(candidate) and candidate > 0:
++                duration = candidate
++                break
++        except (TypeError, ValueError):
++            pass
++    if duration <= 0:
++        raise MediaError(f"Invalid or unknown duration for {path.name}.")
++    if video:
++        width, height = int(video.get("width", 0)), int(video.get("height", 0))
++        if width <= 0 or height <= 0 or width * height > 36_000_000:
++            raise MediaError(f"Unsupported video dimensions in {path.name}.")
++    if decode:
++        cmd = [executable("ffmpeg"), "-nostdin", "-v", "error", "-xerror",
++               "-protocol_whitelist", "file,pipe", "-i", str(path), "-t", "1"]
++        if require_video:
++            cmd += ["-map", "0:v:0", "-an"]
++        elif require_audio:
++            cmd += ["-map", "0:a:0", "-vn"]
++        run_checked(cmd + ["-f", "null", "-"], timeout=45)
++    return {"duration": duration, "video": video, "audio": audio,
++            "size_bytes": path.stat().st_size, "raw": data}
++
++
++def validate_final(path: Path, expected_duration: Optional[float] = None,
++                   width: int = 1080, height: int = 1920, fps: int = 30,
++                   full_decode: bool = False, log_path: Optional[Path] = None
++                   ) -> dict[str, Any]:
++    data = probe_media(path, require_video=True, require_audio=True)
++    video = data["video"]
++    if (video.get("width"), video.get("height")) != (width, height):
++        raise MediaError("Output resolution does not match the requested reel size.")
++    if video.get("codec_name") != "h264" or video.get("pix_fmt") != "yuv420p":
++        raise MediaError("Output is not browser-compatible H.264 / yuv420p.")
++    rate = video.get("avg_frame_rate", "0/1").split("/")
++    actual_fps = float(rate[0]) / max(1, float(rate[-1]))
++    if abs(actual_fps - fps) > 0.05:
++        raise MediaError(f"Unexpected output frame rate: {actual_fps:.3f}.")
++    if expected_duration is not None and abs(data["duration"] - expected_duration) > 0.4:
++        raise MediaError("Output duration differs from the full scene timeline.")
++    if full_decode:
++        run_checked([
++            executable("ffmpeg"), "-nostdin", "-v", "error", "-xerror",
++            "-i", str(path), "-map", "0:v:0", "-map", "0:a:0", "-f", "null", "-",
++        ], timeout=max(90, data["duration"] * 8), log_path=log_path)
++    return data

@@ -1,0 +1,12 @@
+{
+  "facts_cosmos.mp4": {
+    "kind": "photo_motion",
+    "tags": ["space", "galaxy", "cosmos", "facts"],
+    "note": "Included photo-animation demo; not live-action stock footage."
+  },
+  "facts_nebula.mp4": {
+    "kind": "photo_motion",
+    "tags": ["space", "nebula", "stars", "facts"],
+    "note": "Included photo-animation demo; not live-action stock footage."
+  }
+}
