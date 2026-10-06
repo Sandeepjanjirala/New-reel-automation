@@ -78,11 +78,20 @@ def generate_scene_voices_sync(scenes, voice=DEFAULT_VOICE, project_id="demo"):
 
 async def _generate_scene_voices(scenes, voice=DEFAULT_VOICE, project_id="demo"):
     validate_job_id(project_id)
-    result = []
-    for index, scene in enumerate(scenes, 1):
+    
+    async def process_scene(index, scene):
         path, words, duration, srt = await synthesize_voice_with_timestamps(
             scene["narration"], voice, f"{project_id}_scene_{index}.mp3")
-        result.append({"scene_number": scene.get("scene_number", index), "audio_path": str(path),
-                       "words": [word.to_dict() for word in words], "duration": duration,
-                       "srt": srt, "timing_source": "word_boundaries" if words else "estimated"})
-    return result
+        return {
+            "scene_number": scene.get("scene_number", index),
+            "audio_path": str(path),
+            "words": [word.to_dict() for word in words],
+            "duration": duration,
+            "srt": srt,
+            "timing_source": "word_boundaries" if words else "estimated"
+        }
+
+    tasks = [process_scene(index, scene) for index, scene in enumerate(scenes, 1)]
+    result = await asyncio.gather(*tasks)
+    return list(result)
+

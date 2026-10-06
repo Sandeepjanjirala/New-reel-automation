@@ -1,4 +1,5 @@
 import os
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -10,10 +11,10 @@ SUBTITLE_STYLES: Dict[str, Dict[str, Any]] = {
         "normal_color": "&HFFFFFF&",      # Pure White
         "outline_color": "&H00000000&",   # Solid Black Outline
         "shadow_color": "&H80000000&",    # Semi-transparent Black Shadow
-        "font_size": 58,
-        "outline_width": 5.0,
-        "shadow_depth": 2.0,
-        "scale_pop": 112,                 # 112% active word pop
+        "font_size": 60,
+        "outline_width": 5.5,
+        "shadow_depth": 2.5,
+        "scale_pop": 115,                 # 115% active word pop
         "sample_color": "#FFD700"
     },
     "mrbeast_yellow": {
@@ -23,10 +24,10 @@ SUBTITLE_STYLES: Dict[str, Dict[str, Any]] = {
         "normal_color": "&HFFFFFF&",      # Pure White
         "outline_color": "&H00000000&",   # Pure Black Outline
         "shadow_color": "&H90000000&",    # Deep Black Shadow
-        "font_size": 60,
-        "outline_width": 5.5,
-        "shadow_depth": 2.5,
-        "scale_pop": 115,                 # 115% active word pop
+        "font_size": 62,
+        "outline_width": 6.0,
+        "shadow_depth": 3.0,
+        "scale_pop": 120,                 # 120% active word pop
         "sample_color": "#FFFF00"
     },
     "cyberpunk_cyan": {
@@ -36,10 +37,10 @@ SUBTITLE_STYLES: Dict[str, Dict[str, Any]] = {
         "normal_color": "&HFFFFFF&",      # Pure White
         "outline_color": "&H00000000&",   # Deep Black
         "shadow_color": "&H80000000&",
-        "font_size": 56,
-        "outline_width": 4.5,
+        "font_size": 58,
+        "outline_width": 5.0,
         "shadow_depth": 2.0,
-        "scale_pop": 110,
+        "scale_pop": 112,
         "sample_color": "#00F2FE"
     },
     "emerald_lime": {
@@ -49,11 +50,37 @@ SUBTITLE_STYLES: Dict[str, Dict[str, Any]] = {
         "normal_color": "&HFFFFFF&",
         "outline_color": "&H00000000&",
         "shadow_color": "&H80000000&",
-        "font_size": 56,
-        "outline_width": 4.5,
+        "font_size": 58,
+        "outline_width": 5.0,
         "shadow_depth": 2.0,
-        "scale_pop": 110,
+        "scale_pop": 112,
         "sample_color": "#00FF66"
+    },
+    "crimson_impact": {
+        "id": "crimson_impact",
+        "name": "Crimson Impact (Urgent Warning)",
+        "highlight_color": "&H302EFF&",   # Vibrant Crimson Fire
+        "normal_color": "&HFFFFFF&",
+        "outline_color": "&H00000000&",
+        "shadow_color": "&H90000000&",
+        "font_size": 60,
+        "outline_width": 5.5,
+        "shadow_depth": 2.5,
+        "scale_pop": 118,
+        "sample_color": "#FF2E30"
+    },
+    "royal_purple": {
+        "id": "royal_purple",
+        "name": "Royal Violet (Neon Lavender)",
+        "highlight_color": "&HFC84C0&",   # Neon Lavender (BGR for #C084FC)
+        "normal_color": "&HFFFFFF&",
+        "outline_color": "&H00000000&",
+        "shadow_color": "&H80000000&",
+        "font_size": 58,
+        "outline_width": 5.0,
+        "shadow_depth": 2.0,
+        "scale_pop": 112,
+        "sample_color": "#C084FC"
     },
     "clean_minimal": {
         "id": "clean_minimal",
@@ -62,10 +89,10 @@ SUBTITLE_STYLES: Dict[str, Dict[str, Any]] = {
         "normal_color": "&HFFFFFF&",
         "outline_color": "&H00000000&",
         "shadow_color": "&H60000000&",
-        "font_size": 52,
+        "font_size": 54,
         "outline_width": 3.5,
         "shadow_depth": 1.5,
-        "scale_pop": 105,
+        "scale_pop": 108,
         "sample_color": "#FFE600"
     }
 }
@@ -94,13 +121,46 @@ POSITION_PRESETS: Dict[str, Dict[str, Any]] = {
     }
 }
 
+# Contextual high-impact retention keyword to emoji mapping
+KEYWORD_EMOJIS: Dict[str, str] = {
+    "money": "💰", "cash": "💰", "dollar": "💵", "dollars": "💵", "rich": "🤑", "wealth": "💰",
+    "profit": "📈", "crypto": "🪙", "bitcoin": "🪙", "crore": "💰", "lakh": "💰", "earn": "💸",
+    "rocket": "🚀", "fast": "⚡", "launch": "🚀", "boost": "🚀", "speed": "⚡", "scale": "📈",
+    "growth": "📈", "ai": "🧠", "artificial": "🧠", "intelligence": "🧠", "smart": "🧠",
+    "brain": "🧠", "mind": "🧠", "idea": "💡", "think": "💡", "robot": "🤖", "computer": "💻",
+    "code": "💻", "coding": "💻", "software": "💻", "server": "🖥️", "tech": "⚙️",
+    "danger": "⚠️", "warning": "⚠️", "caution": "⚠️", "stop": "🛑", "risk": "⚠️",
+    "mistake": "❌", "error": "❌", "never": "🚫", "worst": "⚠️", "alert": "🚨",
+    "fire": "🔥", "hot": "🔥", "viral": "🔥", "trend": "🔥", "trending": "🔥", "secret": "🤫",
+    "insane": "🤯", "crazy": "🤯", "win": "🏆", "winner": "🏆", "top": "🔝", "best": "⭐",
+    "star": "⭐", "success": "🏆", "first": "🥇", "gold": "🥇", "love": "❤️", "heart": "❤️",
+    "target": "🎯", "goal": "🎯", "focus": "🎯", "plan": "📋", "time": "⏱️", "clock": "⏱️",
+    "hour": "⏳", "lock": "🔒", "unlock": "🔓", "100": "💯", "world": "🌍", "global": "🌍",
+    "power": "⚡", "energy": "⚡", "electric": "⚡", "shield": "🛡️", "safe": "🛡️", "protect": "🛡️"
+}
+
+
+def get_contextual_emoji(word_str: str) -> Optional[str]:
+    """
+    Returns an appropriate contextual emoji if the word matches high-impact retention terms.
+    """
+    clean = re.sub(r'[^a-zA-Z0-9]', '', word_str).lower()
+    if clean in KEYWORD_EMOJIS:
+        return KEYWORD_EMOJIS[clean]
+    # Check simple suffix stems
+    for suffix in ("ing", "ed", "s", "es", "ly"):
+        if clean.endswith(suffix) and len(clean) > len(suffix) + 2:
+            stem = clean[:-len(suffix)]
+            if stem in KEYWORD_EMOJIS:
+                return KEYWORD_EMOJIS[stem]
+    return None
+
 
 def align_roman_words(spoken_words: List[Dict[str, Any]], roman_text: str, duration: float = 5.0) -> List[Dict[str, Any]]:
     """
     Aligns spoken word timestamps (from Edge-TTS) with Roman Telugu / English words.
     Returns words with Roman text and synchronized timestamps.
     """
-    import re
     roman_words = [w.strip() for w in re.split(r'\s+', roman_text) if w.strip()]
     if not roman_words:
         return spoken_words
@@ -151,9 +211,8 @@ def build_karaoke_ass_script(
 ) -> Path:
     """
     Constructs an Advanced SubStation Alpha (.ass) subtitle file featuring
-    dynamic word-by-word karaoke highlight animations and micro-scale pop.
+    Phase 3 Next-Gen kinetic bounce transforms, contextual emojis, and safe-zone enforcement.
     Specifically optimized for 1080x1920 vertical Instagram Reels and YouTube Shorts.
-    Supports Roman Telugu (Option B / English alphabet) and Native Telugu (Option A).
     """
     style = SUBTITLE_STYLES.get(style_id, SUBTITLE_STYLES["hormozi_gold"])
     pos = POSITION_PRESETS.get(position_id, POSITION_PRESETS["bottom_safe"])
@@ -176,11 +235,10 @@ def build_karaoke_ass_script(
 
     if script_format == "roman":
         font_name = "Arial Black"
-        f_size = style["font_size"] + 6  # 64px for ultra-punchy western uppercase font
+        f_size = style["font_size"] + 6  # 64-68px for punchy uppercase text
         if roman_text and roman_text.strip():
             active_words = align_roman_words(words, roman_text.strip(), duration)
         elif words:
-            # Fallback transliteration
             try:
                 from .script_generator import convert_telugu_to_roman
                 roman_fallback = convert_telugu_to_roman(" ".join(w.get("word", "") for w in words))
@@ -192,7 +250,7 @@ def build_karaoke_ass_script(
         f_size = style["font_size"]
 
     header = f"""[Script Info]
-Title: ShortsGenius Active Karaoke Subtitles
+Title: ShortsGenius Kinetic Karaoke Subtitles (Phase 3)
 ScriptType: v4.00+
 WrapStyle: 0
 ScaledBorderAndShadow: yes
@@ -210,7 +268,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     dialogue_lines = []
 
     if active_words and len(active_words) > 0:
-        # Group words into viral 3-word chunks
+        # Group words into high-retention 3-word punchy chunks
         chunk_size = 3
         chunks = [active_words[i:i + chunk_size] for i in range(0, len(active_words), chunk_size)]
 
@@ -221,28 +279,32 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
                 if w_start >= duration or w_end <= w_start:
                     continue
 
-                # If word has 0 or negligible duration, enforce minimum 0.2s duration
                 if w_end <= w_start:
                     w_end = w_start + 0.25
 
                 start_str = _format_ass_time(w_start)
                 end_str = _format_ass_time(w_end)
 
-                # Build line where the active word has highlight color & scale pop
+                # Build line where the active word has kinetic elastic bounce + highlight color + contextual emoji
                 line_parts = []
                 for idx, w_obj in enumerate(chunk):
-                    w_text = _safe_ass_text(str(w_obj["word"]))
+                    raw_word = str(w_obj["word"])
+                    w_text = _safe_ass_text(raw_word)
+                    emoji = get_contextual_emoji(raw_word)
+                    emoji_str = f" {emoji}" if emoji else ""
+
                     if idx == word_idx:
-                        # Active spoken word: highlight color + scale pop
-                        line_parts.append(f"{{\\c{h_color}\\fscx{scale_pop}\\fscy{scale_pop}}}{w_text}{{\\r}}")
+                        # Active spoken word: Kinetic elastic pop transform (125% -> 115%) + Highlight Color
+                        bounce_tag = f"\\t(0,75,\\fscx{scale_pop + 10}\\fscy{scale_pop + 10})\\t(75,150,\\fscx{scale_pop}\\fscy{scale_pop})"
+                        line_parts.append(f"{{{bounce_tag}\\c{h_color}}}{w_text}{emoji_str}{{\\r}}")
                     else:
-                        # Inactive word: clean pure white
+                        # Inactive word in current chunk: clean white with outline
                         line_parts.append(f"{{\\c{n_color}}}{w_text}{{\\r}}")
 
                 formatted_text = " ".join(line_parts)
                 dialogue_lines.append(f"Dialogue: 0,{start_str},{end_str},ReelStyle,,0,0,0,,{formatted_text}")
     elif narration and narration.strip():
-        # Fallback if no word timestamps: display full sentence chunk
+        # Fallback if no word timestamps: display full sentence chunk with pop
         start_str = _format_ass_time(0.0)
         end_str = _format_ass_time(duration)
         text_clean = _safe_ass_text(roman_text.upper() if (script_format == "roman" and roman_text) else narration.strip())
@@ -250,6 +312,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     full_ass_content = header + "\n".join(dialogue_lines) + "\n"
 
+    output_path.parent.mkdir(parents=True, exist_ok=True)
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(full_ass_content)
 
@@ -257,7 +320,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 
 def _safe_ass_text(text: str) -> str:
-    # Prevent user text being interpreted as ASS override tags or hard line breaks.
+    """Prevent text from breaking ASS override syntax."""
     return text.replace("\\", "/").replace("{", "(").replace("}", ")").replace("\n", " ").replace("\r", " ")
 
 

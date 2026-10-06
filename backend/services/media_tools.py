@@ -58,6 +58,57 @@ def run_checked(args: list[str], *, timeout: float = 120,
 
 
 @lru_cache(maxsize=1)
+def detect_best_encoder() -> dict[str, Any]:
+    ffmpeg = executable("ffmpeg")
+    try:
+        encoders_out = subprocess.run(
+            [ffmpeg, "-hide_banner", "-encoders"],
+            stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=10
+        ).stdout
+    except Exception:
+        encoders_out = ""
+
+    candidates = [
+        ("h264_nvenc", "NVIDIA NVENC (GPU)", True,
+         ["-c:v", "h264_nvenc", "-preset", "p4", "-cq", "20", "-b:v", "8M", "-maxrate", "12M", "-pix_fmt", "yuv420p"]),
+        ("h264_qsv", "Intel QuickSync (GPU)", True,
+         ["-c:v", "h264_qsv", "-preset", "veryfast", "-global_quality", "20", "-b:v", "8M", "-pix_fmt", "nv12"]),
+        ("h264_amf", "AMD Radeon AMF (GPU)", True,
+         ["-c:v", "h264_amf", "-quality", "speed", "-rc", "cqp", "-qp_i", "20", "-qp_p", "22", "-pix_fmt", "yuv420p"]),
+        ("h264_videotoolbox", "Apple VideoToolbox (Apple Silicon)", True,
+         ["-c:v", "h264_videotoolbox", "-b:v", "8M", "-pix_fmt", "yuv420p"]),
+        ("libx264", "Multi-Threaded CPU (libx264)", False,
+         ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "2", "-pix_fmt", "yuv420p"]),
+    ]
+
+    for codec_id, display_name, is_hw, args in candidates:
+        if codec_id not in encoders_out:
+            continue
+        try:
+            test_cmd = [
+                ffmpeg, "-nostdin", "-y", "-v", "error", "-f", "lavfi",
+                "-i", "nullsrc=s=128x128:d=0.04:r=25",
+            ] + args + ["-f", "null", "-"]
+            res = subprocess.run(test_cmd, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=5)
+            if res.returncode == 0:
+                return {
+                    "codec": codec_id,
+                    "name": display_name,
+                    "is_hardware": is_hw,
+                    "args": args,
+                }
+        except Exception:
+            continue
+
+    return {
+        "codec": "libx264",
+        "name": "Multi-Threaded CPU (libx264)",
+        "is_hardware": False,
+        "args": ["-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-threads", "2", "-pix_fmt", "yuv420p"],
+    }
+
+
+@lru_cache(maxsize=1)
 def check_tools() -> dict[str, Any]:
     ffmpeg, ffprobe = executable("ffmpeg"), executable("ffprobe")
     filters = run_checked([ffmpeg, "-hide_banner", "-filters"], timeout=15).stdout
@@ -66,9 +117,8 @@ def check_tools() -> dict[str, Any]:
     missing = {"ass", "scale", "crop", "fps", "sidechaincompress", "amix"} - available
     if missing:
         raise MediaError("FFmpeg is missing required filters: " + ", ".join(sorted(missing)))
-    if not re.search(r"\blibx264\b", encoders) or not re.search(r"\baac\b", encoders):
-        raise MediaError("FFmpeg requires the libx264 video and AAC audio encoders.")
-    return {"ok": True, "ffmpeg": ffmpeg, "ffprobe": ffprobe, "libass": True}
+    best_enc = detect_best_encoder()
+    return {"ok": True, "ffmpeg": ffmpeg, "ffprobe": ffprobe, "libass": True, "encoder": best_enc}
 
 
 def safe_child(root: Path, name: str) -> Path:

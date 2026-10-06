@@ -31,8 +31,8 @@ from .services.script_generator import generate_storyboard, Storyboard
 from .services.voice_engine import _generate_scene_voices, synthesize_voice_with_timestamps
 from .services.visual_engine import generate_scene_visuals
 from .services.video_compositor import compose_final_video
-from .services.media_tools import (MediaError, check_tools, executable, probe_media,
-                                   run_checked, safe_child, validate_final, validate_job_id)
+from .services.media_tools import (MediaError, check_tools, detect_best_encoder, executable,
+                                   probe_media, run_checked, safe_child, validate_final, validate_job_id)
 from .services.video_providers import (ROUTER, UPLOADS_DIR, MAX_MEDIA_BYTES, VIDEO_EXTENSIONS,
                                       resolve_custom_clip, source_kind, pexels_key, pixabay_key,
                                       CuratedStockProvider)
@@ -293,12 +293,15 @@ def get_settings():
             gemini = dotenv_values(PROJECT_ROOT / ".env").get("GEMINI_API_KEY", "")
         except Exception:
             pass
+    enc = detect_best_encoder()
     return {
         "has_pexels_key": bool(pexels_key()),
         "has_pixabay_key": bool(pixabay_key()),
         "has_gemini_key": bool(gemini),
+        "encoder": enc["name"],
+        "is_hardware_accelerated": enc["is_hardware"],
         "automatic_source_order": ["pexels", "pixabay", "curated"],
-        "build": "ShortsGenius_Repaired + Pixabay 1.1"
+        "build": "ShortsGenius_Repaired + Hardware Acceleration 2.0"
     }
 
 
@@ -550,23 +553,29 @@ async def _execute_render_pipeline(
     async with RENDER_LOCK:
         try:
             scenes = _validated_scenes(storyboard_data)
-            # Footage is resolved before spending time on network speech generation.
-            JOBS[job_id].update(status="VISUAL_GENERATION", progress=15,
-                               message="Finding and validating footage for every scene...")
+            JOBS[job_id].update(status="PROCESSING", progress=15,
+                               message="Synthesizing narration voices and retrieving footage concurrently...")
             _save_job(job_id)
-            visual_paths = await asyncio.to_thread(
+
+            visual_coro = asyncio.to_thread(
                 generate_scene_visuals, scenes=scenes, project_id=job_id,
                 pexels_api_key=pexels_api_key, custom_clips=custom_clips,
                 scene_providers=scene_providers, allow_photo_motion=allow_photo_motion,
-                pixabay_api_key=pixabay_api_key)
+                pixabay_api_key=pixabay_api_key
+            )
+            voice_coro = _generate_scene_voices(scenes, voice_id, job_id)
+
+            visual_paths, voices = await asyncio.gather(visual_coro, voice_coro)
+
             report = OUTPUT_DIR / "jobs" / job_id / "visual_report.json"
-            JOBS[job_id]["visual_report"] = json.loads(report.read_text(encoding="utf-8"))
-            JOBS[job_id].update(status="VOICE_GENERATION", progress=45,
-                               message="Generating narration and measuring actual audio durations...")
-            _save_job(job_id)
-            voices = await _generate_scene_voices(scenes, voice_id, job_id)
-            JOBS[job_id].update(status="COMPOSITING", progress=75,
-                               message="Rendering footage, captions and audio; validating the final MP4...")
+            if report.is_file():
+                try:
+                    JOBS[job_id]["visual_report"] = json.loads(report.read_text(encoding="utf-8"))
+                except (ValueError, OSError):
+                    pass
+
+            JOBS[job_id].update(status="COMPOSITING", progress=60,
+                               message="Rendering and compositing video scenes in parallel...")
             _save_job(job_id)
             final = await asyncio.to_thread(
                 compose_final_video, scenes=scenes, voice_data=voices,

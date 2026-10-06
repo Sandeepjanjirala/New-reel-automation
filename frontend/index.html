@@ -1122,11 +1122,13 @@
         </p>
       </div>
 
-      <div class="form-group">
-        <label class="form-label">Gemini API Key (Google AI Studio)</label>
-        <input type="password" class="text-input" id="gemini-key-input" placeholder="Paste Gemini API key (Optional for custom scripts)">
-        <p style="font-size: 0.74rem; color: var(--text-sub);">
-          <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color: var(--primary); text-decoration: underline;">Get free Gemini key &rarr;</a>
+      <div class="form-group" style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; margin-top: 12px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span style="font-size:0.78rem; font-weight:600; color:var(--text-main);">⚡ Render Acceleration</span>
+          <span id="encoder-status-badge" style="font-size:0.72rem; padding: 2px 8px; border-radius: 4px; background: rgba(16,185,129,0.15); color: #10B981; font-weight:600;">Probing...</span>
+        </div>
+        <p id="encoder-status-detail" style="font-size: 0.72rem; color: var(--text-sub); margin-top: 4px; margin-bottom: 0;">
+          Automatically detects NVIDIA NVENC, Intel QuickSync, or multi-threaded CPU.
         </p>
       </div>
 
@@ -1648,10 +1650,11 @@
       document.getElementById('library-modal').classList.remove('open');
     }
 
-    /* Settings Modal: keys are sent only to this local backend, never returned. */
     let hasPexelsKey = false;
     let hasPixabayKey = false;
     let hasGeminiKey = false;
+    let activeEncoderName = 'Probing...';
+    let isHardwareEncoder = false;
 
     async function checkApiSettings() {
       try {
@@ -1661,6 +1664,8 @@
         hasPexelsKey = !!data.has_pexels_key;
         hasPixabayKey = !!data.has_pixabay_key;
         hasGeminiKey = !!data.has_gemini_key;
+        activeEncoderName = data.encoder || 'CPU (libx264)';
+        isHardwareEncoder = !!data.is_hardware_accelerated;
         updateSourceBadge();
       } catch (err) {
         console.error('Settings check failed.');
@@ -1669,10 +1674,23 @@
 
     function updateSourceBadge() {
       const pill = document.getElementById('stock-status-pill');
-      if (!pill) return;
-      pill.textContent = `Pixabay: ${hasPixabayKey ? 'key set' : 'not set'} | Pexels: ${hasPexelsKey ? 'key set' : 'not set'}`;
-      pill.title = 'Key presence is not a connectivity check. Click to configure or test your keys.';
-      pill.style.color = hasPixabayKey || hasPexelsKey ? '#10B981' : '#94A3B8';
+      if (pill) {
+        pill.textContent = `Pixabay: ${hasPixabayKey ? 'key set' : 'not set'} | Pexels: ${hasPexelsKey ? 'key set' : 'not set'}`;
+        pill.title = 'Key presence is not a connectivity check. Click to configure or test your keys.';
+        pill.style.color = hasPixabayKey || hasPexelsKey ? '#10B981' : '#94A3B8';
+      }
+      const encBadge = document.getElementById('encoder-status-badge');
+      if (encBadge) {
+        encBadge.textContent = activeEncoderName;
+        encBadge.style.background = isHardwareEncoder ? 'rgba(16,185,129,0.15)' : 'rgba(148,163,184,0.15)';
+        encBadge.style.color = isHardwareEncoder ? '#10B981' : '#94A3B8';
+      }
+      const encDetail = document.getElementById('encoder-status-detail');
+      if (encDetail) {
+        encDetail.textContent = isHardwareEncoder 
+          ? `⚡ Hardware acceleration active: ${activeEncoderName} is accelerating video composition.`
+          : `Multi-threaded CPU encoding (libx264) with parallel scene workers.`;
+      }
       document.getElementById('pixabay-key-input').placeholder = hasPixabayKey ? 'Key saved - leave blank to keep it' : 'Paste your Pixabay API key';
       document.getElementById('pexels-key-input').placeholder = hasPexelsKey ? 'Key saved - leave blank to keep it' : 'Paste an existing Pexels API key';
       document.getElementById('gemini-key-input').placeholder = hasGeminiKey ? 'Key saved - leave blank to keep it' : 'Paste Gemini key for custom AI storyboards';
