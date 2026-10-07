@@ -28,6 +28,9 @@ if __name__ == "__main__":
         "backend.app:app",
         host="127.0.0.1",
         port=8080,
-        reload=True
+        reload=True,
+        reload_dirs=[str(CURRENT_DIR / "backend"), str(CURRENT_DIR / "frontend")],
+        reload_includes=["*.py", "*.html", "*.css", "*.js"],
+        reload_excludes=["*/output/*", "*/assets/*", "*.mp4", "*.mp3", "*.tmp", "*.log"]
     )
 
