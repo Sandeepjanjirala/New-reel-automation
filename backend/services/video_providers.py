@@ -273,10 +273,92 @@ class ProceduralMotionProvider(BaseVideoProvider):
         return output_path
 
 
+class WikimediaCommonsProvider(BaseVideoProvider):
+    """Completely free open public domain media repository. Zero API key required."""
+    def __init__(self):
+        super().__init__("wikimedia", "Wikimedia Commons (Free Public Domain)")
+
+    def is_available(self, context=None):
+        return True
+
+    def generate_clip(self, scene, output_path, context=None):
+        query = str(scene.get("search_keyword", "")).strip() or "historic landscape"
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        url = "https://commons.wikimedia.org/w/api.php"
+        params = {
+            "action": "query",
+            "generator": "search",
+            "gsrsearch": f"{query} filetype:bitmap",
+            "gsrnamespace": 6,
+            "prop": "imageinfo",
+            "iiprop": "url|mime|size",
+            "format": "json",
+            "gsrlimit": 5
+        }
+        headers = {"User-Agent": "ShortsGeniusReels/2.0 (studio@shortsgenius.app)"}
+        try:
+            res = requests.get(url, params=params, headers=headers, timeout=(5, 15))
+            if res.status_code == 200:
+                pages = res.json().get("query", {}).get("pages", {})
+                for page_id, page in pages.items():
+                    info = page.get("imageinfo", [{}])[0]
+                    img_url = info.get("url")
+                    if img_url and img_url.lower().endswith((".jpg", ".jpeg", ".png", ".webp")):
+                        dl = requests.get(img_url, headers=headers, timeout=(5, 20))
+                        if dl.status_code == 200:
+                            img_path = output_path.with_suffix(".jpg")
+                            img_path.write_bytes(dl.content)
+                            return img_path
+        except Exception:
+            pass
+        return None
+
+
+def unsplash_key(context=None):
+    from ..config import UNSPLASH_ACCESS_KEY
+    return (context or {}).get("unsplash_access_key") or os.getenv("UNSPLASH_ACCESS_KEY", UNSPLASH_ACCESS_KEY)
+
+
+class UnsplashProvider(BaseVideoProvider):
+    """High resolution photography with free developer API key."""
+    def __init__(self):
+        super().__init__("unsplash", "Unsplash Stock Visuals")
+
+    def is_available(self, context=None):
+        return bool(unsplash_key(context))
+
+    def generate_clip(self, scene, output_path, context=None):
+        key = unsplash_key(context)
+        if not key:
+            raise MediaError("Unsplash Access Key is missing.")
+        query = str(scene.get("search_keyword", "")).strip() or "cinematic"
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        headers = {"Authorization": f"Client-ID {key}"}
+        params = {"query": query, "orientation": "portrait", "per_page": 5}
+        try:
+            res = requests.get("https://api.unsplash.com/search/photos", params=params, headers=headers, timeout=(5, 15))
+            if res.status_code == 200:
+                results = res.json().get("results", [])
+                for item in results:
+                    img_url = item.get("urls", {}).get("regular") or item.get("urls", {}).get("full")
+                    if img_url:
+                        dl = requests.get(img_url, timeout=(5, 20))
+                        if dl.status_code == 200:
+                            img_path = output_path.with_suffix(".jpg")
+                            img_path.write_bytes(dl.content)
+                            return img_path
+        except Exception as exc:
+            raise MediaError(f"Unsplash error: {exc}")
+        return None
+
+
 class VideoProviderRouter:
     def __init__(self):
         self.providers = {provider.provider_id: provider for provider in (
-            CustomUploadProvider(), PexelsVideoProvider(), PixabayVideoProvider(), CuratedStockProvider(),
+            CustomUploadProvider(), PexelsVideoProvider(), PixabayVideoProvider(),
+            UnsplashProvider(), WikimediaCommonsProvider(), CuratedStockProvider(),
             GenerativeAIVideoProvider(), ProceduralMotionProvider(),
         )}
 
@@ -313,7 +395,7 @@ class VideoProviderRouter:
         preferred = (preferred_provider or "auto").strip().lower()
         if preferred not in {"auto", *self.providers.keys()}:
             raise MediaError(f"Unknown video provider: {preferred}")
-        order = ["pexels", "pixabay", "curated"] if preferred == "auto" else [preferred]
+        order = ["pexels", "pixabay", "unsplash", "wikimedia", "curated"] if preferred == "auto" else [preferred]
         failures = []
         for key in order:
             provider = self.providers[key]

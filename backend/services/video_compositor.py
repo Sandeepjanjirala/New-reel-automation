@@ -47,12 +47,37 @@ def _render_single_scene_worker(
 
     scale_filter = (f"scale={VIDEO_WIDTH}:{VIDEO_HEIGHT}:force_original_aspect_ratio=increase:in_range=auto:out_range=tv,"
                     f"crop={VIDEO_WIDTH}:{VIDEO_HEIGHT},setsar=1")
-                         f"x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':"
-                         f"s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={VIDEO_FPS}")
-    elif motion_mode == 1:
-        # Subtle Center Push-In (1.00x -> 1.07x)
-        motion_filter = (f",zoompan=z='min(1.0+on*0.0006,1.07)':"
-                         f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+    motion_mode = index % 2
+    if is_image:
+        if motion_mode == 0:
+            motion_filter = (f",zoompan=z='min(zoom+0.0015,1.15)':"
+                             f"x='iw/2-iw/zoom/2':y='ih/2-ih/zoom/2':"
+                             f"s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={VIDEO_FPS}")
+        else:
+            motion_filter = (f",zoompan=z='min(1.0+on*0.0006,1.07)':"
+                             f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                             f"s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={VIDEO_FPS}")
+    else:
+        # Kinetic push-in on even scenes, pull-out on odd scenes for professional Gen Z video pacing
+        if motion_mode == 0:
+            motion_filter = (f",zoompan=z='min(zoom+0.0012,1.14)':d=1:"
+                             f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                             f"s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={VIDEO_FPS}")
+        else:
+            motion_filter = (f",zoompan=z='if(lte(zoom,1.0),1.12,max(1.001,zoom-0.0012))':d=1:"
+                             f"x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':"
+                             f"s={VIDEO_WIDTH}x{VIDEO_HEIGHT}:fps={VIDEO_FPS}")
+
+    # Pro Instagram Reel Grade: Enhanced contrast + saturation pop + subtle corner vignette
+    cinematic_grade = ",eq=contrast=1.06:brightness=0.01:saturation=1.14,vignette=angle=PI/24:mode=forward"
+
+    ass_path = str(subtitle).replace("\\", "/").replace(":", "\\:")
+    vf = f"{scale_filter}{motion_filter}{cinematic_grade},ass='{ass_path}'"
+    af_vocal = "aresample=48000,apad,asetpts=PTS-STARTPTS"
+    scene_out = work / f"scene_{index:03d}.mp4"
+
+    encoder_info = detect_best_encoder()
+    enc_args = encoder_info["args"]
     command = [ffmpeg, "-nostdin", "-y", "-hide_banner", "-loglevel", "error",
                "-filter_threads", "2"]
     command += ["-loop", "1"] if is_image else ["-stream_loop", "-1"]

@@ -110,40 +110,63 @@ def _generate_with_gemini(
     language: str,
     api_key: str
 ) -> Storyboard:
-    # 35-45s Reels standard: 6 to 8 modular 5-second scenes
-    scene_count = max(5, min(8, duration_sec // 5))
+    # Gen Z High-Retention 3-Second Cut Standard: Rapid scene changes every ~2.5 to 3.2 seconds
+    scene_count = max(8, min(20, round(duration_sec / 3.0)))
+    per_scene = round(duration_sec / scene_count, 1)
     is_telugu = (language.lower() == "telugu")
 
     lang_instruction = (
-        "CRITICAL LANGUAGE & SUBTITLE RULE:\n"
-        "1. Spoken 'narration' and 'hook': MUST be written in natural, engaging conversational spoken Telugu (తెలుగు) using Telugu Unicode script, exactly like a top Telugu tech creator speaking to the camera (e.g., 'రోజూ గంటల కొద్దీ పని చేసి అలసిపోతున్నారా? ఈ 3 AI టూల్స్ మీ సమయాన్ని ఆదా చేస్తాయి!'). This is sent to Microsoft Edge-TTS (te-IN-MohanNeural) so the voice sounds 100% natural, human, and authentic.\n"
-        "2. 'roman_subtitles': MUST be the EXACT SAME spoken Telugu sentence transliterated into Roman English alphabet letters (Tenglish), as seen on viral Instagram Reels (e.g., 'Rojuvary panulatho alasipothunnara? Ee 3 AI tools mee samayanni aada chesthayi!'). Keep it clean, punchy, and formatted in natural Roman letters matching the spoken words word-for-word.\n"
-        "3. 'visual_prompt': MUST ALWAYS be in English so generative AI video models can understand it.\n"
-        "4. 'search_keyword': MUST be in English (1-2 clean words like 'artificial intelligence', 'coding developer').\n"
-        "5. 'instagram_caption': Should be engaging in Telugu + English with bullet points and emojis."
+        "CRITICAL GEN Z VIRAL EDITING & VISUAL SYNC RULES:\n"
+        f"1. RAPID PACING: This reel MUST feature rapid Gen Z cuts every ~2.5 to 3.2 seconds across exactly {scene_count} scenes.\n"
+        "2. SPOKEN DURATION: Each scene's spoken 'narration' MUST be ONE short, punchy thought (6 to 10 words maximum) that naturally takes ~2.8 to 3.2 seconds to speak. Never place long paragraphs in a single scene.\n"
+        "3. 100% SCRIPT-TO-VISUAL SYNC: For EVERY scene, 'search_keyword' MUST be an ultra-specific 2-to-3-word English visual search query describing the EXACT physical subject, object, or action happening in THAT SPECIFIC 3-SECOND CLIP.\n"
+        "   - Good examples: 'desert ruins aerial', 'abandoned stone houses', 'dark night footsteps', 'shocked face expression', 'ancient temple entrance', 'counting cash money', 'developer typing code'.\n"
+        "   - Strictly FORBIDDEN keywords: 'mystery', 'facts', 'things', 'demo', 'tech', 'video' (too abstract, leads to mismatched clips).\n"
+        "4. 'visual_prompt': Detailed cinematic description in English for AI video models.\n"
+        "5. Spoken 'narration': Natural, conversational spoken Telugu (Unicode script) for voiceover.\n"
+        "6. 'roman_subtitles': EXACT SAME sentence transliterated into uppercase Roman English alphabet letters (Tenglish) for high-impact on-screen captions.\n"
         if is_telugu else
-        "The spoken 'narration' and 'hook' must be in punchy, natural conversational English spoken to camera. 'roman_subtitles' should be identical to 'narration'. 'visual_prompt' in detailed English for video models."
+        "CRITICAL GEN Z VIRAL EDITING & VISUAL SYNC RULES:\n"
+        f"1. RAPID PACING: Rapid Gen Z cuts every ~2.5 to 3.2 seconds across exactly {scene_count} scenes.\n"
+        "2. SPOKEN NARRATION: 6 to 10 words maximum per scene (punchy spoken delivery).\n"
+        "3. 100% SCRIPT-TO-VISUAL SYNC: 'search_keyword' MUST be an ultra-specific 2-to-3-word English visual phrase matching the EXACT subject or action on screen (e.g. 'desert ruins aerial', 'empty town street', 'shocked face close up'). Never use abstract words.\n"
+        "4. Spoken 'narration' & 'roman_subtitles': Punchy, conversational English spoken to camera. 'visual_prompt': detailed 4k cinematic prompt."
+    )
+
+    is_prewritten = len(topic.strip()) > 80 or "\n" in topic or topic.count(".") >= 2
+
+    script_instruction = (
+        "CRITICAL MODE: USER PROVIDED SCRIPT/STORY DECOMPOSITION.\n"
+        "The user provided their own pre-written script or detailed story in the User Input.\n"
+        "DO NOT invent an unrelated story! Your primary job is to PRESERVE their exact story and narrative progression,\n"
+        f"dividing it sequentially into exactly {scene_count} rapid 2.5-3.5 second bite-sized scenes.\n"
+        "Match each individual scene's visual search keyword directly to what is happening in THAT specific line of their story."
+        if is_prewritten else
+        f"CRITICAL MODE: TOPIC CONCEPT GENERATION.\n"
+        f"Generate an engaging, viral high-retention reel script around the topic and niche '{niche}' with rapid 3-second scene progression."
     )
 
     prompt = f"""
-    You are an elite viral Instagram Reels creator & director specializing in tech, productivity, and modern lifestyle content.
-    Topic: "{topic}"
+    You are an elite viral Instagram Reels creator & director specializing in high-retention, fast-paced Gen Z video content for {niche}.
+    User Input:
+    \"\"\"{topic}\"\"\"
+
     Target Niche: {niche}
     Target Language: {language}
-    Target Duration: {duration_sec} seconds across exactly {scene_count} modular scenes (around 4.5 to 5.5 seconds each).
+    Target Duration: {duration_sec} seconds across exactly {scene_count} fast modular scenes (each strictly ~2.5 to 3.2 seconds).
 
+    {script_instruction}
     {lang_instruction}
 
-    Scene Sequencing Rules (Modular 5-Second Blocks):
-    - Scene 1 (Category: hook): 3-4 second scroll-stopping spoken hook with high curiosity.
-    - Scenes 2 to {scene_count - 2} (Category: tool_presentation / demo): Introduce distinct tools or actionable steps with fast-paced visual instructions.
-    - Scene {scene_count - 1} (Category: summary): 4 second quick recap showing all tools/tips together.
-    - Scene {scene_count} (Category: cta): 4 second call-to-action asking viewers to save, share, and follow.
+    Scene Sequencing Rules (Gen Z High-Retention Rhythm):
+    - Scene 1 (Category: hook): 2.5-3.0 second extreme curiosity scroll-stopper hook.
+    - Scenes 2 to {scene_count - 1} (Category: story_development / evidence / reveal): Rapid story progression, switching visuals every ~3 seconds.
+    - Scene {scene_count} (Category: cta): 2.5-3.0 second call-to-action asking viewers to save and follow.
 
     Output STRICTLY valid JSON matching this schema with NO markdown wrapping:
     {{
-      "title": "Clean Title",
-      "topic": "{topic}",
+      "title": "Clean Viral Title",
+      "topic": "{topic[:120]}",
       "niche": "{niche}",
       "language": "{language}",
       "music_mood": "lofi_chill",
@@ -153,22 +176,26 @@ def _generate_with_gemini(
         {{
           "scene_number": 1,
           "scene_category": "hook",
-          "narration": "Spoken Telugu in native script (for voice)...",
-          "roman_subtitles": "Spoken Telugu in Roman English letters (for subtitles)...",
-          "visual_prompt": "Cinematic visual prompt in English for video generator model...",
-          "search_keyword": "tech ai",
-          "duration_estimate_sec": 4.5
+          "narration": "Short spoken sentence (6-10 words)...",
+          "roman_subtitles": "Short sentence in Roman letters...",
+          "visual_prompt": "Cinematic visual prompt in English...",
+          "search_keyword": "concrete 2-3 word visual search query",
+          "duration_estimate_sec": {per_scene}
         }}
       ],
       "instagram_caption": "Viral formatted IG caption with bullet points & CTA",
-      "instagram_hashtags": ["#telugutech", "#ai", "#reels", "#trending", "..."]
+      "instagram_hashtags": ["#reels", "#viral", "#trending", "..."]
     }}
     """
 
-    model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
-    if not re.fullmatch(r"[A-Za-z0-9._-]+", model):
-        raise ValueError("Invalid GEMINI_MODEL setting")
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    models_to_try = []
+    env_model = os.getenv("GEMINI_MODEL", "").strip()
+    if env_model:
+        models_to_try.append(env_model)
+    for candidate in ["gemini-3.8-flash", "gemini-flash-latest"]:
+        if candidate not in models_to_try:
+            models_to_try.append(candidate)
+
     payload = {
         "contents": [{"parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -177,15 +204,61 @@ def _generate_with_gemini(
         }
     }
 
-    res = requests.post(url, json=payload, headers={"x-goog-api-key": api_key}, timeout=40)
-    res.raise_for_status()
-    raw = res.json()["candidates"][0]["content"]["parts"][0]["text"]
-    clean = re.sub(r"^```json\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
-    data = json.loads(clean)
-    for sc in data.get("scenes", []):
-        if is_telugu and not sc.get("roman_subtitles"):
-            sc["roman_subtitles"] = convert_telugu_to_roman(sc.get("narration", ""))
-    return Storyboard(**data)
+    last_error = None
+    for model in models_to_try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+        try:
+            res = requests.post(url, json=payload, headers={"x-goog-api-key": api_key}, timeout=(3, 10))
+            if res.status_code == 200:
+                raw = res.json()["candidates"][0]["content"]["parts"][0]["text"]
+                clean = re.sub(r"^```json\s*|\s*```$", "", raw.strip(), flags=re.MULTILINE)
+                data = json.loads(clean)
+                for sc in data.get("scenes", []):
+                    if is_telugu and not sc.get("roman_subtitles"):
+                        sc["roman_subtitles"] = convert_telugu_to_roman(sc.get("narration", ""))
+                return Storyboard(**data)
+            else:
+                last_error = f"{model} returned HTTP {res.status_code}"
+        except Exception as e:
+            last_error = f"{model} error: {e}"
+            continue
+
+    print(f"[ScriptGenerator] Gemini unavailable ({last_error}), switching to instant semantic engine.")
+    return _generate_semantic_storyboard(topic, duration_sec, niche, language)
+
+
+def _segment_script_into_rapid_cuts(text: str) -> list[str]:
+    """
+    Decomposes any input script into punchy 5-to-9 word spoken thoughts (~2.5-3.2 seconds each).
+    Enforces the Gen Z rapid cut rule: a new video cut appears every ~3 seconds.
+    """
+    raw_pieces = [p.strip() for p in re.split(r'(?:[\r\n]+|[.!?]+|(?<=[,;:])\s+)', text) if len(p.strip()) > 2]
+    split_pieces = []
+    for piece in raw_pieces:
+        words = piece.split()
+        if len(words) <= 9:
+            split_pieces.append(piece)
+        else:
+            for k in range(0, len(words), 8):
+                chunk_str = " ".join(words[k:k + 8])
+                if chunk_str.strip():
+                    split_pieces.append(chunk_str)
+
+    merged = []
+    curr = ""
+    for p in split_pieces:
+        w_cnt = len(p.split())
+        if not curr:
+            curr = p
+        elif len(curr.split()) + w_cnt <= 9:
+            curr = f"{curr} {p}"
+        else:
+            merged.append(curr)
+            curr = p
+    if curr:
+        merged.append(curr)
+
+    return merged if merged else [text[:80]]
 
 
 def _generate_semantic_storyboard(
@@ -195,13 +268,87 @@ def _generate_semantic_storyboard(
     language: str = "Telugu"
 ) -> Storyboard:
     """
-    Intelligent semantic intent engine for offline/fallback mode with full Telugu support.
+    Intelligent semantic intent engine for rapid 3-second cuts with 100% script-to-visual matching.
     """
     is_telugu = (language.lower() == "telugu")
-    scene_count = max(5, min(8, duration_sec // 5))
-    per_scene = round(duration_sec / scene_count, 1)
-
     t_lower = topic.lower()
+
+    # 0. User Provided Script / Story Decomposition Mode (Rapid 3-Second Cut Standard)
+    if len(topic.strip()) > 60 or "\n" in topic or topic.count(".") >= 2:
+        cuts = _segment_script_into_rapid_cuts(topic)
+        total_cuts = len(cuts)
+        per_cut = round(max(2.5, min(3.5, duration_sec / max(1, total_cuts))), 1)
+
+        # High-precision visual keyword mapper for 100% script-to-visual match
+        kw_map = [
+            (["village", "disappear", "vanish", "ghost"], "desert ghost town"),
+            (["kuldhara", "rajasthan", "desert", "sand", "dune"], "rajasthan desert ruins"),
+            (["temple", "ancient", "statue", "idol"], "ancient stone temple"),
+            (["night", "dark", "moon", "midnight", "shadow"], "dark night atmosphere"),
+            (["battle", "war", "soldier", "army", "sword"], "ancient battlefield dust"),
+            (["escape", "flee", "running", "chase"], "running shadow night"),
+            (["ruler", "king", "palace", "salim", "throne", "emperor"], "ancient palace throne"),
+            (["curse", "cursed", "dead", "haunt", "blood", "kill"], "mysterious dark ruins"),
+            (["today", "empty", "ruin", "house", "abandoned"], "abandoned stone ruins aerial"),
+            (["morning", "wake", "sun", "sunrise", "dawn"], "morning desert dawn"),
+            (["tax", "money", "wealth", "cash", "gold", "coins", "rich"], "counting money cash"),
+            (["muscle", "gym", "workout", "fitness", "body", "lift"], "fitness workout gym"),
+            (["dress", "outfit", "fashion", "style", "clothes", "model"], "fashion model street"),
+            (["ai", "code", "software", "tool", "coding", "developer"], "coding developer screen"),
+            (["space", "galaxy", "universe", "planet", "stars", "alien"], "deep galaxy stars"),
+            (["food", "eat", "cooking", "chef", "restaurant"], "delicious food cooking"),
+            (["car", "supercar", "race", "drive", "speed"], "supercar racing speed"),
+            (["nature", "mountain", "forest", "tree", "river"], "majestic mountain aerial"),
+            (["ocean", "sea", "beach", "water", "island"], "ocean waves beach aerial"),
+            (["shock", "unbelievable", "secret", "truth", "crazy"], "shocked person face"),
+            (["phone", "app", "save", "follow", "instagram", "screen"], "mobile phone app screen"),
+        ]
+
+        scenes = []
+        for i, cut in enumerate(cuts):
+            narration = cut
+            roman_sub = convert_telugu_to_roman(narration) if is_telugu else narration
+            category = "hook" if i == 0 else ("cta" if i == total_cuts - 1 else "story_development")
+
+            # Map keyword based on exact spoken sentence content
+            matched_kw = None
+            narr_lower = narration.lower()
+            for triggers, visual_kw in kw_map:
+                if any(trig in narr_lower for trig in triggers):
+                    matched_kw = visual_kw
+                    break
+
+            if not matched_kw:
+                words = [w.lower() for w in re.findall(r'[A-Za-z0-9]{4,}', narration)]
+                clean_kw = [w for w in words if w not in {"this", "that", "there", "about", "their", "where", "which", "could", "would", "because", "simply"}]
+                matched_kw = " ".join(clean_kw[:2]) if len(clean_kw) >= 2 else (clean_kw[0] if clean_kw else (niche.lower().split()[0] if niche else "mystery"))
+
+            scenes.append(Scene(
+                scene_number=i + 1,
+                scene_category=category,
+                narration=narration,
+                roman_subtitles=roman_sub,
+                visual_prompt=f"Cinematic atmospheric footage representing {matched_kw}, 4k professional grading",
+                search_keyword=matched_kw,
+                duration_estimate_sec=per_cut
+            ))
+
+        return Storyboard(
+            title=cuts[0][:50] if cuts else "Pro Reel Story",
+            topic=topic[:120].strip(),
+            niche=niche,
+            language=language,
+            music_mood="lofi_chill",
+            total_duration_estimate_sec=round(len(scenes) * per_cut, 1),
+            hook=scenes[0].narration,
+            scenes=scenes,
+            instagram_caption=f"{topic[:220]}...\n\n📌 Save this reel & share with friends!\n👇 Comment your thoughts below!",
+            instagram_hashtags=["#reels", f"#{re.sub(r'[^a-zA-Z0-9]', '', niche.lower())}", "#viral", "#trending", "#story"]
+        )
+
+    # Concept Mode: calculate exact scene count for rapid ~3.0s cut rhythm
+    scene_count = max(8, min(20, round(duration_sec / 3.0)))
+    per_scene = round(duration_sec / scene_count, 1)
 
     # 1. Tech & AI Tools Intent
     if any(k in t_lower for k in ["ai", "tech", "tool", "tools", "code", "coding", "software", "chatgpt"]):

@@ -385,12 +385,13 @@
       box-shadow: none !important;
     }
 
-    /* Storyboard Section */
+    /* Storyboard Section - Full Height Middle Column */
     .storyboard-container {
       display: flex;
       flex-direction: column;
       gap: 1.25rem;
-      max-height: 650px;
+      flex: 1;
+      min-height: 850px;
       overflow-y: auto;
       padding-right: 0.5rem;
     }
@@ -877,15 +878,18 @@
       </div>
 
       <div class="form-group">
-        <label class="form-label">Video Concept / Script Prompt</label>
-        <textarea class="text-input" id="topic-input" placeholder="e.g. 3 fashion rules that instantly elevate your daily outfit..."></textarea>
+        <label class="form-label">Video Concept or Full Script (Paste Any Story / Script)</label>
+        <textarea class="text-input" id="topic-input" style="min-height: 120px;" placeholder="Paste your entire story, video script, or brief idea here (supports 50,000+ characters, any language or topic)..."></textarea>
       </div>
 
-      <!-- Quick Preset Suggestions Tailored to User's 4 Core Niches -->
+      <!-- Quick Preset Suggestions Tailored to Diverse Niches -->
       <div class="form-group">
         <label class="form-label">Trending Creator Templates</label>
         <div class="chips-group">
-          <div class="chip" onclick="applyPreset('3 AI tools that can save you hours of work', 'Tech & AI', 40, 'Telugu')">🤖 3 AI టూల్స్ (Telugu Tech)</div>
+          <div class="chip" onclick="applyPreset('Imagine waking up one morning and discovering that an entire village had simply disappeared. The mysterious legend of Kuldhara in Rajasthan.', 'History & Mystery', 40, 'Telugu')">🏛️ కుల్ధరా మిస్టరీ (History / Mystery)</div>
+          <div class="chip" onclick="applyPreset('3 AI tools that can save you hours of work', 'Tech & AI', 40, 'Telugu')">🤖 3 AI టూల్స్ (Tech)</div>
+          <div class="chip" onclick="applyPreset('Most people waste their 20s chasing pleasure. Here are 3 habits that will make you unstoppable.', 'Motivation & Mindset', 35, 'Telugu')">🔥 మార్నింగ్ మోటివేషన్ (Motivation)</div>
+          <div class="chip" onclick="applyPreset('How the wealthy legally pay less tax and grow compound wealth faster', 'Finance & Wealth', 40, 'Telugu')">💰 ఫైనాన్స్ సీక్రెట్స్ (Finance)</div>
           <div class="chip" onclick="applyPreset('3 style rules that make any outfit look ten times more expensive', 'Fashion & Style', 40, 'Telugu')">👔 స్టైల్ సీక్రెట్స్ (Fashion)</div>
           <div class="chip" onclick="applyPreset('If you are training hard but not gaining muscle, fix this mistake', 'Fitness & Gym', 40, 'Telugu')">🏋️ మజిల్ గ్రోత్ (Fitness)</div>
           <div class="chip" onclick="applyPreset('The physics paradox that completely defies standard human intuition', 'Mind-Blowing Facts', 35, 'Telugu')">🌌 స్పేస్ పారడాక్స్ (Facts)</div>
@@ -898,18 +902,29 @@
           <select class="select-dropdown" id="language-select" onchange="handleLanguageChange()">
             <option value="Telugu" selected>Telugu (తెలుగు)</option>
             <option value="English">English</option>
+            <option value="Hindi">Hindi (हिंदी)</option>
           </select>
         </div>
 
         <div class="form-group">
           <label class="form-label">Content Niche</label>
           <select class="select-dropdown" id="niche-select">
-            <option value="Tech & AI" selected>Tech & Artificial Intelligence</option>
-            <option value="Fashion & Style">Fashion & Style</option>
-            <option value="Fitness & Gym">Fitness & Gym</option>
-            <option value="Mind-Blowing Facts">Mind-Blowing Facts & Science</option>
-            <option value="Travel & Adventure">Travel & Adventure</option>
-            <option value="Finance & Wealth">Finance & Wealth Strategy</option>
+            <option value="Tech & AI">🚀 Tech & Artificial Intelligence</option>
+            <option value="History & Mystery" selected>🏛️ History & Ancient Mysteries</option>
+            <option value="True Crime & Thriller">🔪 True Crime & Thrillers</option>
+            <option value="Horror & Paranormal">👻 Horror & Paranormal</option>
+            <option value="Mind-Blowing Facts">🧠 Mind-Blowing Facts & Science</option>
+            <option value="Finance & Wealth">💰 Finance, Wealth & Crypto</option>
+            <option value="Fitness & Gym">🏋️ Fitness, Health & Gym</option>
+            <option value="Fashion & Style">👗 Fashion & Personal Style</option>
+            <option value="Motivation & Mindset">🔥 Motivation & Self-Discipline</option>
+            <option value="Mythology & Legends">🕉️ Mythology & Epics</option>
+            <option value="Travel & Adventure">✈️ Travel & Adventure</option>
+            <option value="Food & Cooking">🍳 Food & Cooking</option>
+            <option value="Business & Startups">🏢 Business & Startups</option>
+            <option value="Comedy & Entertainment">🎭 Comedy & Relatable</option>
+            <option value="Trending News">📰 Trending News</option>
+            <option value="General & Custom">✍️ Custom Niche (Any Topic)</option>
           </select>
         </div>
       </div>
@@ -918,21 +933,44 @@
         <div class="form-group">
           <label class="form-label">Target Duration</label>
           <select class="select-dropdown" id="duration-select">
-            <option value="25">25s (Quick Hook & Tip)</option>
-            <option value="40" selected>40s (Standard 8-Scene Viral Reel)</option>
-            <option value="50">50s (Deep Breakdown)</option>
+            <option value="25">⚡ 25s (~8 Rapid Cuts, ~3s Pace)</option>
+            <option value="40" selected>🔥 40s (~13 Rapid Cuts, ~3s Pace - Gen Z Pro)</option>
+            <option value="50">🚀 50s (~17 Rapid Cuts, ~3s Pace - Deep Story)</option>
           </select>
         </div>
 
         <div class="form-group">
           <label class="form-label">Neural Voice Narrator</label>
           <select class="select-dropdown" id="voice-select">
-            <option value="te-IN-MohanNeural" selected>Mohan (Telugu Authoritative Male)</option>
-            <option value="te-IN-ShrutiNeural">Shruti (Telugu Engaging Female)</option>
-            <option value="en-US-ChristopherNeural">Christopher (English Authoritative Male)</option>
-            <option value="en-US-JennyNeural">Jenny (English Engaging Female)</option>
-            <option value="en-US-GuyNeural">Guy (English Viral Male)</option>
-            <option value="en-GB-RyanNeural">Ryan (English British)</option>
+            <optgroup label="Telugu (Natural Human Voice)">
+              <option value="te-IN-ShrutiNeural" selected>✨ Shruti (Telugu Natural Female - Human Voice)</option>
+              <option value="te-IN-MohanNeural">Mohan (Telugu Natural Male)</option>
+            </optgroup>
+            <optgroup label="English (Conversational / Ultra Natural)">
+              <option value="en-US-JennyNeural">✨ Jenny (English Natural Female - Human Voice)</option>
+              <option value="en-US-AriaNeural">✨ Aria (English Dynamic Female)</option>
+              <option value="en-US-AvaNeural">Ava (Expressive Natural Female)</option>
+              <option value="en-US-AndrewNeural">Andrew (Conversational Warm Male)</option>
+              <option value="en-US-BrianNeural">Brian (Casual Authentic Young Male)</option>
+              <option value="en-US-EmmaNeural">Emma (Friendly Storyteller Female)</option>
+              <option value="en-US-ChristopherNeural">Christopher (Authoritative Documentary Male)</option>
+              <option value="en-US-GuyNeural">Guy (Energetic & Punchy Male)</option>
+              <option value="en-US-EricNeural">Eric (Calm & Informative Male)</option>
+            </optgroup>
+            <optgroup label="British & Indian English">
+              <option value="en-GB-RyanNeural">Ryan (Sophisticated British Male)</option>
+              <option value="en-GB-SoniaNeural">Sonia (Polished British Female)</option>
+              <option value="en-IN-NeerjaNeural">Neerja (Natural Indian English Female)</option>
+              <option value="en-IN-PrabhatNeural">Prabhat (Natural Indian English Male)</option>
+            </optgroup>
+            <optgroup label="Hindi (Natural)">
+              <option value="hi-IN-SwaraNeural">Swara (Natural Hindi Female)</option>
+              <option value="hi-IN-MadhurNeural">Madhur (Natural Hindi Male)</option>
+            </optgroup>
+            <optgroup label="ElevenLabs (If Key Set in .env)">
+              <option value="elevenlabs_21m00Tcm4TlvDq8ikWAM">Rachel (ElevenLabs Natural Female)</option>
+              <option value="elevenlabs_pNInz6obpgDQGcFmaJgB">Adam (ElevenLabs Deep Male)</option>
+            </optgroup>
           </select>
         </div>
       </div>
@@ -1122,7 +1160,38 @@
         </p>
       </div>
 
-      <div class="form-group" style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; margin-top: 12px;">
+      <div class="form-group">
+        <label class="form-label">Google Gemini API Key (AI Storyboard Generation)</label>
+        <input type="password" class="text-input" id="gemini-key-input" placeholder="Paste your Google Gemini API key">
+        <p style="font-size: 0.74rem; color: var(--text-sub); margin-top: 0.35rem;">
+          Get your free API key at <a href="https://aistudio.google.com/app/apikey" target="_blank" style="color: var(--primary); text-decoration: underline;">Google AI Studio &rarr;</a>
+        </p>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">Unsplash API Access Key (High-Res Cinematic Photography)</label>
+        <input type="password" class="text-input" id="unsplash-key-input" placeholder="Paste your Unsplash Access Key">
+        <p style="font-size: 0.74rem; color: var(--text-sub); margin-top: 0.35rem;">
+          Free instant key at <a href="https://unsplash.com/developers" target="_blank" style="color: var(--primary); text-decoration: underline;">Unsplash Developer Portal &rarr;</a>
+        </p>
+      </div>
+
+      <div class="form-group">
+        <label class="form-label">ElevenLabs API Key (Ultra-Realistic Human Voice Cloning)</label>
+        <input type="password" class="text-input" id="elevenlabs-key-input" placeholder="Paste your ElevenLabs API key (optional)">
+        <p style="font-size: 0.74rem; color: var(--text-sub); margin-top: 0.35rem;">
+          Optional. Free tier available at <a href="https://elevenlabs.io" target="_blank" style="color: var(--primary); text-decoration: underline;">ElevenLabs.io &rarr;</a>
+        </p>
+      </div>
+
+      <div class="form-group" style="background: rgba(0, 242, 254, 0.05); border: 1px dashed rgba(0, 242, 254, 0.3); border-radius: 8px; padding: 10px 12px;">
+        <span style="font-size:0.78rem; font-weight:600; color:var(--primary);">🏛️ Wikimedia Commons Active</span>
+        <p style="font-size: 0.72rem; color: var(--text-sub); margin-top: 4px; margin-bottom: 0;">
+          Completely free with zero API keys required. Millions of historical, scientific, and cultural media files are automatically searched as fallback.
+        </p>
+      </div>
+
+      <div class="form-group" style="background: rgba(255,255,255,0.03); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px 12px; margin-top: 8px;">
         <div style="display:flex; justify-content:space-between; align-items:center;">
           <span style="font-size:0.78rem; font-weight:600; color:var(--text-main);">⚡ Render Acceleration</span>
           <span id="encoder-status-badge" style="font-size:0.72rem; padding: 2px 8px; border-radius: 4px; background: rgba(16,185,129,0.15); color: #10B981; font-weight:600;">Probing...</span>
@@ -1653,6 +1722,8 @@
     let hasPexelsKey = false;
     let hasPixabayKey = false;
     let hasGeminiKey = false;
+    let hasUnsplashKey = false;
+    let hasElevenLabsKey = false;
     let activeEncoderName = 'Probing...';
     let isHardwareEncoder = false;
 
@@ -1664,6 +1735,8 @@
         hasPexelsKey = !!data.has_pexels_key;
         hasPixabayKey = !!data.has_pixabay_key;
         hasGeminiKey = !!data.has_gemini_key;
+        hasUnsplashKey = !!data.has_unsplash_key;
+        hasElevenLabsKey = !!data.has_elevenlabs_key;
         activeEncoderName = data.encoder || 'CPU (libx264)';
         isHardwareEncoder = !!data.is_hardware_accelerated;
         updateSourceBadge();
@@ -1675,9 +1748,11 @@
     function updateSourceBadge() {
       const pill = document.getElementById('stock-status-pill');
       if (pill) {
-        pill.textContent = `Pixabay: ${hasPixabayKey ? 'key set' : 'not set'} | Pexels: ${hasPexelsKey ? 'key set' : 'not set'}`;
-        pill.title = 'Key presence is not a connectivity check. Click to configure or test your keys.';
-        pill.style.color = hasPixabayKey || hasPexelsKey ? '#10B981' : '#94A3B8';
+        const pState = hasPixabayKey ? 'Pixabay: active' : 'Pixabay: not set';
+        const uState = hasUnsplashKey ? 'Unsplash: active' : '';
+        pill.textContent = `${pState} | Wikimedia: Free Active ${uState ? '| ' + uState : ''}`;
+        pill.title = 'Sources available: Pixabay, Wikimedia Commons (Free), Unsplash, Local Footage';
+        pill.style.color = hasPixabayKey || hasUnsplashKey ? '#10B981' : '#00F2FE';
       }
       const encBadge = document.getElementById('encoder-status-badge');
       if (encBadge) {
@@ -1694,6 +1769,12 @@
       document.getElementById('pixabay-key-input').placeholder = hasPixabayKey ? 'Key saved - leave blank to keep it' : 'Paste your Pixabay API key';
       document.getElementById('pexels-key-input').placeholder = hasPexelsKey ? 'Key saved - leave blank to keep it' : 'Paste an existing Pexels API key';
       document.getElementById('gemini-key-input').placeholder = hasGeminiKey ? 'Key saved - leave blank to keep it' : 'Paste Gemini key for custom AI storyboards';
+      if (document.getElementById('unsplash-key-input')) {
+        document.getElementById('unsplash-key-input').placeholder = hasUnsplashKey ? 'Key saved - leave blank to keep it' : 'Paste your Unsplash Access Key';
+      }
+      if (document.getElementById('elevenlabs-key-input')) {
+        document.getElementById('elevenlabs-key-input').placeholder = hasElevenLabsKey ? 'Key saved - leave blank to keep it' : 'Paste your ElevenLabs API key (optional)';
+      }
     }
 
     async function testStockKey(provider) {
@@ -1713,7 +1794,6 @@
         const data = await res.json();
         if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Key test failed.');
         status.textContent = data.message;
-        // Testing a typed key does not configure the running app; saving does.
         showToast(data.valid ? 'Key accepted. Save Configuration for new keys.' : data.message, data.valid ? 'success' : 'warning');
       } catch (err) {
         status.textContent = `Test failed: ${err.message}`;
@@ -1727,9 +1807,19 @@
 
     async function saveSettings() {
       const payload = {};
-      for (const provider of ['pixabay', 'pexels', 'gemini']) {
-        const value = document.getElementById(`${provider}-key-input`).value.trim();
-        if (value) payload[`${provider}_api_key`] = value;
+      const providers = [
+        ['pixabay', 'pixabay_api_key'],
+        ['pexels', 'pexels_api_key'],
+        ['gemini', 'gemini_api_key'],
+        ['unsplash', 'unsplash_access_key'],
+        ['elevenlabs', 'elevenlabs_api_key']
+      ];
+      for (const [id, keyName] of providers) {
+        const el = document.getElementById(`${id}-key-input`);
+        if (el) {
+          const value = el.value.trim();
+          if (value) payload[keyName] = value;
+        }
       }
       try {
         const res = await fetch('/api/settings', {
@@ -1737,11 +1827,12 @@
         });
         const data = await res.json();
         if (!res.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not save keys.');
-        for (const provider of ['pixabay', 'pexels', 'gemini']) {
-          document.getElementById(`${provider}-key-input`).value = '';
+        for (const [id] of providers) {
+          const el = document.getElementById(`${id}-key-input`);
+          if (el) el.value = '';
         }
         await checkApiSettings();
-        showToast('Configuration saved. Existing FFmpeg paths were preserved.', 'success');
+        showToast('Configuration saved successfully!', 'success');
         closeSettingsModal();
       } catch (err) {
         showToast('Failed to save settings: ' + err.message, 'error');

@@ -27,38 +27,31 @@ VIDEO_FPS = 30
 AVAILABLE_VOICES = {
     "mohan": {
         "id": "te-IN-MohanNeural",
-        "name": "Mohan (Telugu Authoritative Male)",
+        "name": "Mohan (Telugu Natural Male)",
         "language": "te-IN",
         "gender": "male",
-        "style": "tech"
+        "style": "authoritative"
     },
     "shruti": {
         "id": "te-IN-ShrutiNeural",
-        "name": "Shruti (Telugu Engaging Female)",
+        "name": "Shruti (Telugu Natural Female)",
         "language": "te-IN",
         "gender": "female",
         "style": "storytelling"
     },
-    "christopher": {
-        "id": "en-US-ChristopherNeural",
-        "name": "Christopher (Authoritative Male)",
+    "andrew": {
+        "id": "en-US-AndrewNeural",
+        "name": "Andrew (Conversational Warm Male - Ultra Natural)",
         "language": "en-US",
         "gender": "male",
-        "style": "documentary"
+        "style": "conversational"
     },
-    "guy": {
-        "id": "en-US-GuyNeural",
-        "name": "Guy (Energetic Male)",
-        "language": "en-US",
-        "gender": "male",
-        "style": "hype"
-    },
-    "jenny": {
-        "id": "en-US-JennyNeural",
-        "name": "Jenny (Clear & Engaging Female)",
+    "ava": {
+        "id": "en-US-AvaNeural",
+        "name": "Ava (Expressive Natural Female - Ultra Natural)",
         "language": "en-US",
         "gender": "female",
-        "style": "storytelling"
+        "style": "warm"
     },
     "aria": {
         "id": "en-US-AriaNeural",
@@ -67,16 +60,93 @@ AVAILABLE_VOICES = {
         "gender": "female",
         "style": "modern"
     },
+    "brian": {
+        "id": "en-US-BrianNeural",
+        "name": "Brian (Casual Authentic Young Male)",
+        "language": "en-US",
+        "gender": "male",
+        "style": "casual"
+    },
+    "emma": {
+        "id": "en-US-EmmaNeural",
+        "name": "Emma (Friendly Storyteller Female)",
+        "language": "en-US",
+        "gender": "female",
+        "style": "storytelling"
+    },
+    "christopher": {
+        "id": "en-US-ChristopherNeural",
+        "name": "Christopher (Authoritative Documentary Male)",
+        "language": "en-US",
+        "gender": "male",
+        "style": "documentary"
+    },
+    "jenny": {
+        "id": "en-US-JennyNeural",
+        "name": "Jenny (Clear & Engaging Female)",
+        "language": "en-US",
+        "gender": "female",
+        "style": "podcast"
+    },
+    "guy": {
+        "id": "en-US-GuyNeural",
+        "name": "Guy (Energetic & Punchy Male)",
+        "language": "en-US",
+        "gender": "male",
+        "style": "hype"
+    },
+    "eric": {
+        "id": "en-US-EricNeural",
+        "name": "Eric (Calm & Informative Male)",
+        "language": "en-US",
+        "gender": "male",
+        "style": "calm"
+    },
     "ryan": {
         "id": "en-GB-RyanNeural",
-        "name": "Ryan (Sophisticated British)",
+        "name": "Ryan (Sophisticated British Male)",
         "language": "en-GB",
         "gender": "male",
         "style": "intellectual"
+    },
+    "sonia": {
+        "id": "en-GB-SoniaNeural",
+        "name": "Sonia (Polished British Female)",
+        "language": "en-GB",
+        "gender": "female",
+        "style": "elegant"
+    },
+    "neerja": {
+        "id": "en-IN-NeerjaNeural",
+        "name": "Neerja (Natural Indian English Female)",
+        "language": "en-IN",
+        "gender": "female",
+        "style": "warm"
+    },
+    "prabhat": {
+        "id": "en-IN-PrabhatNeural",
+        "name": "Prabhat (Natural Indian English Male)",
+        "language": "en-IN",
+        "gender": "male",
+        "style": "confident"
+    },
+    "swara": {
+        "id": "hi-IN-SwaraNeural",
+        "name": "Swara (Natural Hindi Female)",
+        "language": "hi-IN",
+        "gender": "female",
+        "style": "expressive"
+    },
+    "madhur": {
+        "id": "hi-IN-MadhurNeural",
+        "name": "Madhur (Natural Hindi Male)",
+        "language": "hi-IN",
+        "gender": "male",
+        "style": "conversational"
     }
 }
 
-DEFAULT_VOICE = "te-IN-MohanNeural"
+DEFAULT_VOICE = "te-IN-ShrutiNeural"
 
 # API Keys (Optional with built-in intelligent fallbacks)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
@@ -84,3 +154,4 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 PEXELS_API_KEY = os.getenv("PEXELS_API_KEY", "")
 PIXABAY_API_KEY = os.getenv("PIXABAY_API_KEY", "")
 UNSPLASH_ACCESS_KEY = os.getenv("UNSPLASH_ACCESS_KEY", "")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "")

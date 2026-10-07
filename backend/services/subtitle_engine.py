@@ -123,20 +123,37 @@ POSITION_PRESETS: Dict[str, Dict[str, Any]] = {
 
 # Contextual high-impact retention keyword to emoji mapping
 KEYWORD_EMOJIS: Dict[str, str] = {
+    # Wealth & Finance
     "money": "💰", "cash": "💰", "dollar": "💵", "dollars": "💵", "rich": "🤑", "wealth": "💰",
     "profit": "📈", "crypto": "🪙", "bitcoin": "🪙", "crore": "💰", "lakh": "💰", "earn": "💸",
+    # Speed & Momentum
     "rocket": "🚀", "fast": "⚡", "launch": "🚀", "boost": "🚀", "speed": "⚡", "scale": "📈",
-    "growth": "📈", "ai": "🧠", "artificial": "🧠", "intelligence": "🧠", "smart": "🧠",
+    "growth": "📈", "power": "⚡", "energy": "⚡", "electric": "⚡",
+    # Tech, AI & Code
+    "ai": "🧠", "artificial": "🧠", "intelligence": "🧠", "smart": "🧠",
     "brain": "🧠", "mind": "🧠", "idea": "💡", "think": "💡", "robot": "🤖", "computer": "💻",
     "code": "💻", "coding": "💻", "software": "💻", "server": "🖥️", "tech": "⚙️",
+    # Warnings & Alerts
     "danger": "⚠️", "warning": "⚠️", "caution": "⚠️", "stop": "🛑", "risk": "⚠️",
     "mistake": "❌", "error": "❌", "never": "🚫", "worst": "⚠️", "alert": "🚨",
+    # Viral & Trending
     "fire": "🔥", "hot": "🔥", "viral": "🔥", "trend": "🔥", "trending": "🔥", "secret": "🤫",
-    "insane": "🤯", "crazy": "🤯", "win": "🏆", "winner": "🏆", "top": "🔝", "best": "⭐",
-    "star": "⭐", "success": "🏆", "first": "🥇", "gold": "🥇", "love": "❤️", "heart": "❤️",
-    "target": "🎯", "goal": "🎯", "focus": "🎯", "plan": "📋", "time": "⏱️", "clock": "⏱️",
-    "hour": "⏳", "lock": "🔒", "unlock": "🔓", "100": "💯", "world": "🌍", "global": "🌍",
-    "power": "⚡", "energy": "⚡", "electric": "⚡", "shield": "🛡️", "safe": "🛡️", "protect": "🛡️"
+    "insane": "🤯", "crazy": "🤯", "shock": "😱", "shocking": "😱", "truth": "👁️",
+    # Success & Achievement
+    "win": "🏆", "winner": "🏆", "top": "🔝", "best": "⭐", "star": "⭐", "success": "🏆",
+    "first": "🥇", "gold": "🥇", "target": "🎯", "goal": "🎯", "focus": "🎯", "100": "💯",
+    # Mystery, Horror & Ancient Lore
+    "mystery": "🕵️", "ghost": "👻", "haunted": "👻", "dark": "🌑", "night": "🌙", "shadow": "👤",
+    "curse": "💀", "cursed": "💀", "dead": "💀", "death": "☠️", "ruins": "🏛️", "temple": "🏛️",
+    "ancient": "📜", "village": "🏚️", "empty": "🏚️", "king": "👑", "palace": "🏰", "blood": "🩸",
+    # Fitness, Health & Strength
+    "gym": "🏋️", "workout": "💪", "muscle": "💪", "strong": "💪", "fitness": "🏃", "body": "🏋️",
+    # Lifestyle, Travel & Universe
+    "love": "❤️", "heart": "❤️", "earth": "🌍", "world": "🌍", "global": "🌍", "space": "🌌",
+    "galaxy": "🌌", "planet": "🪐", "car": "🏎️", "plane": "✈️", "travel": "✈️", "food": "🍔",
+    # Time & Protection
+    "time": "⏱️", "clock": "⏱️", "hour": "⏳", "lock": "🔒", "unlock": "🔓", "shield": "🛡️",
+    "safe": "🛡️", "protect": "🛡️"
 }
 
 

@@ -129,7 +129,7 @@ def _preflight(req):
 
 
 class GenerateScriptRequest(BaseModel):
-    topic: str = Field(min_length=3, max_length=500)
+    topic: str = Field(min_length=2, max_length=50000)
     duration_sec: int = Field(default=40, ge=5, le=180)
     niche: str = "Tech & AI"
     language: str = "Telugu"
@@ -153,6 +153,8 @@ class SettingsRequest(BaseModel):
     pexels_api_key: Optional[str] = None
     pixabay_api_key: Optional[str] = None
     gemini_api_key: Optional[str] = None
+    unsplash_access_key: Optional[str] = None
+    elevenlabs_api_key: Optional[str] = None
 
 
 class VoicePreviewRequest(BaseModel):
@@ -293,14 +295,21 @@ def get_settings():
             gemini = dotenv_values(PROJECT_ROOT / ".env").get("GEMINI_API_KEY", "")
         except Exception:
             pass
-    enc = detect_best_encoder()
+    unsplash = os.getenv("UNSPLASH_ACCESS_KEY", getattr(config, "UNSPLASH_ACCESS_KEY", ""))
+    elevenlabs = os.getenv("ELEVENLABS_API_KEY", getattr(config, "ELEVENLABS_API_KEY", ""))
+    try:
+        enc = detect_best_encoder()
+    except MediaError:
+        enc = {"name": "FFmpeg Not Detected (Install FFmpeg or set FFMPEG_EXE in .env)", "is_hardware": False}
     return {
         "has_pexels_key": bool(pexels_key()),
         "has_pixabay_key": bool(pixabay_key()),
         "has_gemini_key": bool(gemini),
+        "has_unsplash_key": bool(unsplash),
+        "has_elevenlabs_key": bool(elevenlabs),
         "encoder": enc["name"],
         "is_hardware_accelerated": enc["is_hardware"],
-        "automatic_source_order": ["pexels", "pixabay", "curated"],
+        "automatic_source_order": ["pexels", "pixabay", "unsplash", "wikimedia", "curated"],
         "build": "ShortsGenius_Repaired + Hardware Acceleration 2.0"
     }
 
@@ -312,7 +321,9 @@ def update_settings(req: SettingsRequest):
     try:
         for field, variable in (("pexels_api_key", "PEXELS_API_KEY"),
                                 ("pixabay_api_key", "PIXABAY_API_KEY"),
-                                ("gemini_api_key", "GEMINI_API_KEY")):
+                                ("gemini_api_key", "GEMINI_API_KEY"),
+                                ("unsplash_access_key", "UNSPLASH_ACCESS_KEY"),
+                                ("elevenlabs_api_key", "ELEVENLABS_API_KEY")):
             value = getattr(req, field)
             if value is not None:
                 updates[variable] = validate_key(value)

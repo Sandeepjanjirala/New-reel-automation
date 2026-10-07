@@ -15,7 +15,7 @@ import time
 import uuid
 from pathlib import Path
 from urllib.parse import urljoin, urlsplit
-
+import re
 import requests
 
 from .media_tools import MediaError, probe_media
@@ -178,57 +178,94 @@ class PixabayClient:
             partial.unlink(missing_ok=True)
 
     def fetch_scene(self, scene: dict, output_path: Path, used: set) -> Path:
-        query = " ".join(str(scene.get("search_keyword", "")).split())
-        data, from_cache = self.search(query)
-        choices = []
-        for rank, hit in enumerate(data["hits"]):
-            video_id = hit.get("id")
-            if isinstance(video_id, bool) or not isinstance(video_id, int) or video_id < 1:
-                continue
-            if _number(hit.get("duration")) > 600:
-                continue
-            variants = []
-            renditions = hit.get("videos")
-            if not isinstance(renditions, dict):
-                continue
-            for variant in renditions.values():
-                if not isinstance(variant, dict):
-                    continue
-                width, height = _number(variant.get("width")), _number(variant.get("height"))
-                if width <= 0 or height <= 0 or not _trusted_url(variant.get("url", ""), media=True):
-                    continue
-                if _number(variant.get("size")) > MAX_MEDIA_BYTES:
-                    continue
-                # Select near-full-HD instead of blindly downloading 4K.
-                variants.append((abs(width * height - 1080 * 1920), variant))
-            if not variants:
-                continue
-            variant = min(variants, key=lambda v: v[0])[1]
-            width, height = _number(variant["width"]), _number(variant["height"])
-            score = (f"pixabay:{video_id}" in used, height < width, rank)
-            choices.append((score, hit, variant))
-        if not choices:
-            raise MediaError(f'No usable Pixabay video matched "{query}". Edit the English search keyword or upload a clip.')
+        raw_query = " ".join(str(scene.get("search_keyword", "")).split())
+        candidate_queries = [raw_query] if raw_query else []
+        words = [w for w in re.findall(r'[a-zA-Z0-9]+', raw_query.lower()) if len(w) >= 3]
+        if len(words) >= 3:
+            candidate_queries.append(" ".join(words[:2]))
+            candidate_queries.append(" ".join(words[-2:]))
+        for w in words:
+            if w not in {"the", "and", "for", "with", "from", "video", "footage", "clip"}:
+                candidate_queries.append(w)
+
+        # Contextual prompt keywords fallback
+        v_prompt = str(scene.get("visual_prompt", "")).lower()
+        prompt_words = [w for w in re.findall(r'[a-zA-Z]{4,}', v_prompt) if w not in {"cinematic", "atmospheric", "footage", "representing", "high", "production", "value", "scene"}]
+        if prompt_words:
+            candidate_queries.append(" ".join(prompt_words[:2]))
+            candidate_queries.append(prompt_words[0])
+            
+        candidate_queries.extend(["cinematic aerial", "nature landscape", "city street night"])
+
+        # Deduplicate while preserving priority order
+        seen_queries = set()
+        unique_queries = []
+        for q in candidate_queries:
+            q_clean = " ".join(q.split())
+            if q_clean and q_clean not in seen_queries:
+                seen_queries.add(q_clean)
+                unique_queries.append(q_clean)
+
         errors = []
-        for _, hit, variant in sorted(choices, key=lambda row: row[0])[:3]:
-            target = Path(output_path)
-            token = f"pixabay:{hit['id']}"
+        for query in unique_queries:
             try:
-                info = self._download(variant["url"], target)
-                source_url = str(hit.get("pageURL", ""))
-                if not _trusted_url(source_url):
-                    source_url = f"https://pixabay.com/videos/id-{hit['id']}/"
-                metadata = {
-                    "provider": "pixabay", "video_id": hit["id"], "source_url": source_url,
-                    "creator": {"name": str(hit.get("user", "")), "id": hit.get("user_id")},
-                    "query": query, "width": info["video"]["width"], "height": info["video"]["height"],
-                    "duration": info["duration"], "reused": token in used,
-                    "search_cached": from_cache, "license_url": "https://pixabay.com/service/license-summary/",
-                }
-                _write_json(target.with_suffix(".source.json"), metadata)
-                used.add(token)  # Only mark as used after a validated successful download.
-                return target
-            except (MediaError, OSError) as exc:
-                target.unlink(missing_ok=True)
-                errors.append(str(exc))
-        raise MediaError("No Pixabay candidate passed download/validation. " + " | ".join(errors))
+                data, from_cache = self.search(query)
+            except MediaError as me:
+                errors.append(f"{query}: {me}")
+                continue
+
+            choices = []
+            for rank, hit in enumerate(data.get("hits", [])):
+                video_id = hit.get("id")
+                if isinstance(video_id, bool) or not isinstance(video_id, int) or video_id < 1:
+                    continue
+                if _number(hit.get("duration")) > 600:
+                    continue
+                variants = []
+                renditions = hit.get("videos")
+                if not isinstance(renditions, dict):
+                    continue
+                for variant in renditions.values():
+                    if not isinstance(variant, dict):
+                        continue
+                    width, height = _number(variant.get("width")), _number(variant.get("height"))
+                    if width <= 0 or height <= 0 or not _trusted_url(variant.get("url", ""), media=True):
+                        continue
+                    if _number(variant.get("size")) > MAX_MEDIA_BYTES:
+                        continue
+                    # Select near-full-HD instead of blindly downloading 4K.
+                    variants.append((abs(width * height - 1080 * 1920), variant))
+                if not variants:
+                    continue
+                variant = min(variants, key=lambda v: v[0])[1]
+                width, height = _number(variant["width"]), _number(variant["height"])
+                # Prefer unused clips and vertical orientation if available
+                score = (f"pixabay:{video_id}" in used, height < width, rank)
+                choices.append((score, hit, variant))
+
+            if not choices:
+                continue
+
+            for _, hit, variant in sorted(choices, key=lambda row: row[0])[:3]:
+                target = Path(output_path)
+                token = f"pixabay:{hit['id']}"
+                try:
+                    info = self._download(variant["url"], target)
+                    source_url = str(hit.get("pageURL", ""))
+                    if not _trusted_url(source_url):
+                        source_url = f"https://pixabay.com/videos/id-{hit['id']}/"
+                    metadata = {
+                        "provider": "pixabay", "video_id": hit["id"], "source_url": source_url,
+                        "creator": {"name": str(hit.get("user", "")), "id": hit.get("user_id")},
+                        "query": query, "width": info["video"]["width"], "height": info["video"]["height"],
+                        "duration": info["duration"], "reused": token in used,
+                        "search_cached": from_cache, "license_url": "https://pixabay.com/service/license-summary/",
+                    }
+                    _write_json(target.with_suffix(".source.json"), metadata)
+                    used.add(token)
+                    return target
+                except (MediaError, OSError) as exc:
+                    target.unlink(missing_ok=True)
+                    errors.append(str(exc))
+
+        raise MediaError(f'No Pixabay video matched "{raw_query}" or fallback queries. ' + " | ".join(errors[:3]))
